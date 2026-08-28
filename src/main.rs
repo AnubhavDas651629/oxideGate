@@ -1,24 +1,30 @@
+use anyhow::Context;
 use axum::{routing::get, Json, Router};
 use serde_json::json;
 use std::net::SocketAddr;
+use tracing::info;
 
-// tokio::main
-async fn main() {
-    //build router with routes
-    let app = Router::new().route("/heath", get(health_handler));
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Send tracing events to stdout. RUST_LOG controls the level.
+    tracing_subscriber::fmt::init();
 
-    //Bind to localhost:8000
+    // Build the router: one route for now.
+    let app = Router::new().route("/health", get(health_handler));
+
     let addr = SocketAddr::from(([127, 0, 0, 1], 8000));
-    println!("listening on {}", addr);
 
-    //run the server
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .expect("failed to bind");
+        .with_context(|| format!("failed to bind {addr}"))?;
 
-    axum::serve(listener, app).await.expect("server error");
+    info!("oxideGate listening on {addr}");
+
+    axum::serve(listener, app).await.context("server error")?;
+
+    Ok(())
 }
 
 async fn health_handler() -> Json<serde_json::Value> {
-    Json(json!({"status": "ok"}))
+    Json(json!({ "status": "ok" }))
 }
