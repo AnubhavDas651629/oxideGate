@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// What a client sends us. A subset of the OpenAI chat-completions request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -19,7 +19,7 @@ pub struct Message {
 }
 
 /// What we send back.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ChatCompletionResponse {
     pub id: String,
     pub object: String,
@@ -29,14 +29,14 @@ pub struct ChatCompletionResponse {
     pub usage: Usage,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Choice {
     pub index: u32,
     pub message: Message,
     pub finish_reason: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
