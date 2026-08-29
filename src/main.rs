@@ -6,8 +6,8 @@ use axum::{
     Json, Router,
 };
 use serde_json::json;
+use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{fmt::format, net::SocketAddr};
 use tracing::info;
 use types::{ChatCompletionsRequest, ChatCompletionsResponse, Choice, Message, Usage};
 
@@ -82,4 +82,11 @@ async fn chat_completions_handler(
             total_tokens: 0,
         },
     })
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
