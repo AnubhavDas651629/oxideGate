@@ -46,7 +46,7 @@ async fn health_handler() -> Json<serde_json::Value> {
 }
 
 async fn chat_completions_handler(
-    Json(req): Json<ChatCompletionsRequest>,
+    Json(req): Json<ChatCompletionsRequest>, // the req body, parsed as json into that struct
 ) -> Json<ChatCompletionsResponse> {
     info!(
         model = %req.model,

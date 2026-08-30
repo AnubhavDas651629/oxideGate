@@ -1,0 +1,9 @@
+{
+    "accessibility.signalOptions.volume": 0,
+    "accessibility.signals.lineHasError": {
+        "sound": "off"
+    },
+    "accessibility.signals.lineHasWarning": {
+        "sound": "off"
+    }
+}

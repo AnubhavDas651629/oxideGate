@@ -14,7 +14,7 @@ pub struct ChatCompletionsRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     // #[serde(default)] tells the library: "If the user doesn't send the stream field in their JSON, don't crash! Just use the default value."
-    pub stream: bool,
+    pub stream: bool, // bools deafult is false
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
