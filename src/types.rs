@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 // what clients send us. A subset of the openAI cgat completion req
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 // in rust by default everything is private, pub make it public => the struct can be seen over in main.rs
 pub struct ChatCompletionsRequest {
     pub model: String,
@@ -23,7 +23,7 @@ pub struct Message {
     pub content: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ChatCompletionsResponse {
     pub id: String,
     pub object: String,
@@ -33,14 +33,14 @@ pub struct ChatCompletionsResponse {
     pub usage: Usage,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Choice {
     pub index: u32,
     pub message: Message,
     pub finish_reason: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,

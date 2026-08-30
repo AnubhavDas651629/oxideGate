@@ -30,10 +30,16 @@ impl GatewayError {
 }
 
 /// lets us retrun Gatewayerror straight out of a handler
+/// IntoResponse is a trait
+/// OKay so imagine something goes wrong and we have a gateway error
+/// BUT, browser/client donnot understands gateway error, it needs HTTP response
+/// Into response defines that conversion
+/// fn into_response(self) -> Response, this line is predefined and has to be written as it is in order to use it the trait
+/// Notice this takes self (not &self), meaning it consumes the error entirely and converts it into a brand new Response object to be sent back to the client!
 impl IntoResponse for GatewayError {
-    fn info_response(self) -> Response {
-        let (status, code) = self.parts();
-        let message = self.to_string();
+    fn into_response(self) -> Response {
+        let (status, code) = self.parts(); // calling the fn defeined above (parts()) -> method return a tuple (StatusCode, &'String str)
+        let message = self.to_string(); //to_string() this basically takes the error message of whichever error is the reason and then puts it here
 
         tracing::error!(error = %message, "request failed");
 
