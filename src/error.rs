@@ -1,5 +1,5 @@
 use axum::http::StatusCode;
-use axum::response::{InfoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 use thiserror::Error;
@@ -7,8 +7,11 @@ use thiserror::Error;
 //everything that could go wrong while serving a request
 #[derive(Debug, Error)]
 pub enum GatewayError {
+    /// #[from] is a special instruction for the thiserror library.
+    /// It means: "If the code somewhere creates a reqwest::Error,
+    /// automatically convert it into a GatewayError::BackendUnreachable for me."
     #[error("Could not reach backend: {0}")]
-    BackendUnreachable(#[from] reqwest::Error),
+    BackendUnreachable(#[from] reqwest::Error), // reqwest::Error -> reqwest is the http library used to call the network, when the network call fails reqwest generates an error, #[from] -> if the code somewhere creates a reqwest::Error, it automatically convert it inot GatewarError::BackendUnreachable
 
     #[error("backend returned {status}: {body}")]
     BackendStatus { status: StatusCode, body: String },
@@ -27,7 +30,7 @@ impl GatewayError {
 }
 
 /// lets us retrun Gatewayerror straight out of a handler
-impl InfoResponse for GatewayError {
+impl IntoResponse for GatewayError {
     fn info_response(self) -> Response {
         let (status, code) = self.parts();
         let message = self.to_string();
@@ -40,6 +43,6 @@ impl InfoResponse for GatewayError {
                 "code": code,
             }
         }));
-        (status, body).info_response()
+        (status, body).into_response()
     }
 }
