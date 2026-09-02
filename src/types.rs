@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 // what clients send us. A subset of the openAI cgat completion req
 #[derive(Debug, Deserialize, Serialize)]
 // in rust by default everything is private, pub make it public => the struct can be seen over in main.rs
-pub struct ChatCompletionsRequest {
+pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<Message>, //Vector, As for message, we need to define the "Message" struct somewhere
     pub max_tokens: Option<u32>, // by wrappin in option we tell rust this field might be null, or some(500)
@@ -24,7 +24,7 @@ pub struct Message {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ChatCompletionsResponse {
+pub struct ChatCompletionResponse {
     pub id: String,
     pub object: String,
     pub created: u64,
