@@ -1,0 +1,43 @@
+services:
+  # Model backend. Ollama speaks the OpenAI API, so the gateway code is
+  # unchanged when this is swapped for vLLM on a GPU box.
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: [ "CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # Pulls the model once, then exits. Keeps first-run from 404ing.
+  model-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: [ "ollama", "pull", "qwen2.5:0.5b" ]
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: "no"
+
+  gateway:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      OXIDEGATE_BIND: 0.0.0.0:8000
+      OXIDEGATE_BACKEND: http://ollama:11434/v1
+      RUST_LOG: info
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+volumes:
+  ollama-models:

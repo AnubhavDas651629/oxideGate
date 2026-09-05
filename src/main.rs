@@ -113,17 +113,18 @@ async fn buffered_completion(
     req: ChatCompletionRequest,
 ) -> Result<Response, GatewayError> {
     let started = Instant::now();
-    let resp = send_to_backend(&state, &req).await?;
+    let resp = send_to_backend(&state, &req).await?; // passes the HTTP Client(state) and the user's chat(req) to a helper function "Send_to_backend", this makes the web request to the backend AI
 
-    let parsed: ChatCompletionResponse = resp.json().await?;
+    let parsed: ChatCompletionResponse = resp.json().await?; // AI model generates the text and repies with raw JSON text and the text is converted into struct called ChatCompletion resposne
 
     info!(
-        e2e_ms = started.elapsed().as_millis(),
-        completion_tokens = parsed.usage.completion_tokens,
+        e2e_ms = started.elapsed().as_millis(), // e2e_ms: looking at the stopwatch we called earlier, .elapsed() -> get the time in ms
+        completion_tokens = parsed.usage.completion_tokens, // parsed-> just defined above, now parsed is a struct so we are just getting the info anout exact number of tokens(words) the AI generated
         "backend responded"
     );
 
-    Ok(Json(parsed).into_response())
+    Ok(Json(parsed).into_response()) // result is to be returned, ok means success no erros
+                                     // into_reponse defined in types -> put the correct http error headers( for ex 201 error)
 }
 
 /// Pipe the backend's SSE frames straight through to the client.
