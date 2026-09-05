@@ -1,5 +1,11 @@
 # Project Spec: oxideGate
 
+> **Note:** `ROADMAP.md` is authoritative for dates, phase scope and design
+> decisions. Where this document disagrees with it, the roadmap wins. Two
+> decisions have already superseded text below: gateway-side batching is a
+> measured negative result rather than a feature (D1), and V1 keeps all shared
+> state in-process with no Redis (D2).
+
 ## Part 1: Product Requirements
 
 ### Definition
@@ -27,7 +33,7 @@ To **demonstrate deep systems thinking and performance optimization** through a 
 1. **Request admission** → Client sends OpenAI-compatible `/v1/chat/completions` request with API key
 2. **Tenant resolution** → API key maps to tenant with quota (token budget, rate limit, concurrency cap)
 3. **Queueing** → Request enters fair queue or rejected with 429
-4. **Batching** → Scheduler waits 5-20ms (configurable), collects requests, dispatches batch
+4. **Dispatch** → Scheduler releases the request when the backend has an in-flight slot free (see ROADMAP D1; the 5-20ms batching window is built only to measure that it costs latency)
 5. **Backend routing** → Select healthiest backend by current load
 6. **Streaming** → Forward tokens back to client via SSE
 7. **Accounting** → Track token usage against tenant quota
@@ -78,7 +84,7 @@ V1 is **not** about ease of use. It's about measurement.
 | Load testing | criterion + custom Rust harness | Measurement is the deliverable. |
 | Profiling | flamegraph + perf | Identify bottlenecks. |
 | Metrics | Prometheus format + local logging | Track latency histograms, throughput. |
-| Queueing state | In-memory (crossbeam channels + Arc<Mutex>) | V1 single-process. Redis in V2. |
+| Queueing state | In-memory (channels + Arc<Mutex>) | V1 single-process. Revisit for V2 only. |
 | Tenant quotas | In-memory HashMap with atomic counters | Single-process V1. |
 | Backends | vLLM (2 instances) + llama.cpp CPU fallback | Realistic multi-backend scenario. |
 | Deploy | Docker Compose | Easy local setup. |
@@ -98,7 +104,7 @@ V1 is **not** about ease of use. It's about measurement.
 1. **OpenAI API compatibility** — `POST /v1/chat/completions` request/response match OpenAI schema (subset).
 2. **Per-tenant quotas** — Token budget, request rate limit, max concurrent requests. Enforced at admission.
 3. **Admission control** — Reject with 429 (Too Many Requests) when queue depth > threshold.
-4. **Batching window** — Configurable 5-20ms. Collect requests, dispatch as batch.
+4. **Concurrency limit** — Configurable cap on requests in flight at the backend. The batching window (5-20ms) is implemented as an experiment, then replaced. See ROADMAP D1.
 5. **Fair queueing** — Weighted by tenant tier (free tier weighted at 0.5x, paid at 1.0x). Free-tier flood doesn't starve paid.
 6. **Backend health checking** — Periodic probe. Mark unhealthy, remove from rotation, probe again.
 7. **SSE streaming** — Forward tokens from backend to client as they arrive. Partial responses on error.
@@ -332,7 +338,7 @@ tenant_token_usage{tenant_id="free-tier-1"} 5000
 
 ## V1 Milestones (Clear success criteria)
 
-### Phase 1: Proxy skeleton (Week 1–2)
+### Phase 1: Proxy skeleton (Aug 27 – Sep 10)
 - [ ] `axum` HTTP server listening on `:8000`
 - [ ] Parse OpenAI-compatible `/v1/chat/completions` request
 - [ ] Forward to hardcoded vLLM backend via `reqwest`
@@ -340,21 +346,21 @@ tenant_token_usage{tenant_id="free-tier-1"} 5000
 - [ ] Docker Compose file with 1x vLLM container
 - [ ] **Measurement**: Request works end-to-end. No latency targets yet.
 
-### Phase 2: Scheduler + batching (Week 3–4)
+### Phase 2: Scheduler (Sep 11 – Sep 24)
 - [ ] Request queue (crossbeam MPMC)
 - [ ] Batch timer and collector
 - [ ] Admit requests based on queue depth (hard threshold)
 - [ ] Dispatch batches to backend
 - [ ] **Measurement**: Latency vs. batch size curve. Graph it.
 
-### Phase 3: Multi-tenancy + fairness (Week 4–5)
+### Phase 3: Multi-tenancy + fairness (Sep 25 – Oct 8)
 - [ ] Tenant model (id, tier, quotas)
 - [ ] Quota checks at admission
 - [ ] Token accounting
 - [ ] Weighted fair queueing
 - [ ] **Measurement**: Fairness test — free tier flood doesn't starve paid tier. Measure p99 latency delta.
 
-### Phase 4: Reliability + full suite (Week 5–6)
+### Phase 4: Reliability + full suite (Oct 9 – Oct 22)
 - [ ] Health probes for backends
 - [ ] Circuit breaker
 - [ ] No-retry-after-stream rule
@@ -362,7 +368,7 @@ tenant_token_usage{tenant_id="free-tier-1"} 5000
 - [ ] Flamegraph profiling
 - [ ] **Measurement**: Latency histograms at 10x, 50x, 100x concurrency. Degradation curve.
 
-### Phase 5: Writeups (Week 6+)
+### Phase 5: Writeups (Oct 23 – Nov 2)
 - [ ] Writeup 1: "What surprised me" (batching curves, fairness costs, tail latency insights)
 - [ ] Writeup 2: "Failure modes and graceful degradation" (what happens when backends die?)
 - [ ] Update README with latency table + links to writeups

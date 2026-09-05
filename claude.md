@@ -45,7 +45,7 @@ Fixed. Do not propose additions without a strong, specific reason.
 | Observability | tracing, tracing-subscriber, Prometheus metrics, Grafana |
 | Benchmarking | criterion + a custom Rust load generator |
 | Profiling | flamegraph, perf |
-| Shared state | Redis (quotas, rate-limit counters) |
+| Shared state | In-process: atomics + `Arc<Mutex>`. **No Redis in V1** (ROADMAP D2) |
 | Config / logs (optional) | Postgres |
 | Backends | 2x vLLM containers, small model (Qwen 0.5B class); llama.cpp CPU fallback |
 | Deploy | Docker Compose (local), Kubernetes manifests, GitHub Actions CI |
@@ -68,15 +68,20 @@ decides what to dispatch, where, and when.
 
 - **Admission control** — reject with 429 when queue depth exceeds threshold.
   Rejecting early is correct behaviour, not a failure.
-- **Batching** — hold requests for a short window (5–20ms), dispatch together.
-  The window-vs-TTFT tradeoff is a primary experiment.
+- **Concurrency limiting** — cap how many requests are in flight at the backend
+  at once. Too few idles the GPU; too many buries the queue inside vLLM where we
+  cannot reorder or shed it. Finding that knee is a primary experiment.
+- **Batching** — built and measured as a *negative* result, not a feature. The
+  backend batches continuously on its own and takes one conversation per HTTP
+  request, so a gateway-side window is pure added latency. See ROADMAP D1.
 - **Fairness** — tenants have tiers; a free-tier flood must not starve a paid
   tenant. Weighted fair queueing.
 - **Routing** — select backend by current load and health, not round-robin.
 
 ### 3. Multi-tenancy
 Per-tenant token budgets, request-rate limits, and concurrency caps, enforced at
-admission time. Counters in Redis. Per-request usage accounting.
+admission time. Counters in-process (atomics), so their contention cost is
+measurable rather than hidden behind a network hop. Per-request usage accounting.
 
 ### 4. Reliability and measurement
 - Circuit breaking: erroring backends leave rotation, get probed until healthy.
@@ -124,13 +129,9 @@ is the main risk to this project.
 
 ## Timeline
 
-| Window | Goal |
-|---|---|
-| Weeks 1–2 | Working proxy skeleton. Ugly is fine, it must run. |
-| Weeks 3–4 | Scheduler: queue, admission control, batching, routing. |
-| Weeks 4–5 | Multi-tenancy: quotas, rate limits, concurrency caps. |
-| Weeks 5–6 | Fault injection, full benchmark suite, one optimization pass with before/after flamegraphs. |
-| Ongoing | Two technical writeups: (1) what I measured and what surprised me, (2) failure modes and how the system degrades. |
+See `ROADMAP.md` — it is authoritative for dates, scope and decisions.
+Eight weeks, Aug 27 → Oct 22, in four two-week phases: proxy skeleton,
+scheduler, multi-tenancy, reliability + optimisation. Then writeups.
 
 Shipping something real and measured beats shipping something complete. If time
 runs short, cut features, never cut the measurements.

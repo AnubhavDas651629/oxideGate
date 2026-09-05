@@ -1,7 +1,10 @@
 # oxideGate — Project Timeline & Goals
 
 **Project Start Date**: August 27, 2026  
-**Target Ship Date**: October 22, 2026 (6 weeks)
+**Target Ship Date**: October 22, 2026 (**8 weeks**, four 2-week phases)
+
+> `ROADMAP.md` is authoritative for scope and design decisions. This file is the
+> dated milestone breakdown that sits under it.
 
 ---
 
@@ -29,7 +32,7 @@
 
 ---
 
-## Phase 2: Scheduler + Batching
+## Phase 2: Scheduler
 **Duration**: Sep 11 – Sep 24 (2 weeks)  
 **Goal**: Build the queue and batch collector. Start measuring latency.
 
@@ -38,11 +41,11 @@
 |------|-----------|-----------------|
 | Sep 11 | Queue structure (crossbeam MPMC) | Requests enqueue without blocking. No deadlocks. |
 | Sep 13 | Batch timer task | Background task wakes every 10ms, collects pending requests. |
-| Sep 15 | Batch dispatch | Send batches to backend instead of individual requests. Latency improves. |
+| Sep 15 | In-flight concurrency limit | Cap concurrent backend requests; queue the rest. See ROADMAP D1. |
 | Sep 17 | Admission control (hard threshold) | Reject with 429 if queue_depth > 100. Test it. |
 | Sep 19 | Load generator v1 | Simple Rust harness fires N concurrent requests, measures response times. |
-| Sep 22 | Latency measurement | Collect p50/p95/p99 latency across batch sizes (5ms, 10ms, 20ms). Graph it. |
-| Sep 24 | ✅ Phase 2 complete | Batching curve exists. Can explain why longer batches help throughput but hurt TTFT. |
+| Sep 22 | Latency measurement | Two curves: batching window 0/5/10/20ms (expect pure cost), and in-flight limit 1-32 (expect a knee). |
+| Sep 24 | ✅ Phase 2 complete | Both curves exist. Can explain why a gateway-side window only adds latency against a continuously-batching backend, and where the concurrency knee is. |
 
 ### Rust Learning Focus:
 - Crossbeam channels (MPMC)
