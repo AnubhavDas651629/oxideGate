@@ -102,16 +102,47 @@ slack from finishing Phase 1 early.
 
 ### Phase 2 — Scheduler · Sep 11 – Sep 24
 
+Ordered so the batching result lands **first**. D1 decides what the scheduler's
+core abstraction should be, so building admission control and fairness before
+knowing the answer means reworking them afterwards.
+
+The experiment cannot run before the scheduler exists — a batching window *is*
+scheduler machinery. So this is Phase 2 reordered, not work moved ahead of it.
+
+#### 2a — get the answer · Sep 11 – 17
+
 - [ ] `QueuedRequest` + oneshot response channel (D4)
-- [ ] Queue and scheduler task
-- [ ] Admission control: hard queue-depth threshold, 429 on overflow
-- [ ] Streaming preserved through the queue
+- [ ] Queue + scheduler task; batching window configurable, `0` disables it
+- [ ] Streaming preserved through the queue (regression risk: the existing SSE
+      test must keep passing)
 - [ ] Load generator (`src/bin/loadgen.rs`): configurable concurrency and RPS,
       TTFT and E2E percentiles
-- [ ] **Experiment 1** — batching window 0/5/10/20ms (expect: pure cost)
-- [ ] **Experiment 2** — in-flight limit 1/2/4/8/16/32 (expect: a knee)
+- [ ] **Experiment 1** — window 0/5/10/20ms against the mock. `0` is the
+      control; without it the numbers mean nothing
+- [ ] Confirmation run against real Ollama — noisier, but it shows the
+      mechanism holds outside the simulator
+- [ ] **Writeup 1 draft** — "I built a batching layer and deleted it"
 
-**Exit:** both curves plotted and explainable.
+#### 2b — build on it · Sep 18 – 24
+
+- [ ] In-flight concurrency limiter (replaces the window)
+- [ ] **Experiment 2** — limit 1/2/4/8/16/32 (expect: a knee)
+- [ ] Admission control: queue-depth threshold sized by what Experiment 2
+      showed, 429 on overflow
+
+**Exit:** both curves plotted and explainable, and a draft writeup.
+
+#### Honesty conditions for Experiment 1
+
+The result is only worth publishing if the setup could have proved the opposite:
+
+- `window = 0` is the control, always run.
+- The mock already gives batching's benefit for free — 4 concurrent requests
+  complete in the same time as 1, up to its concurrency limit. So a window has
+  a real opportunity to add value on top. It is not a rigged test.
+- The mock's throughput is flat up to its limit and then blocks; a real GPU
+  degrades gradually instead. State that limitation in the writeup rather than
+  waiting for a reader to find it.
 
 ### Phase 3 — Multi-tenancy · Sep 25 – Oct 8
 
