@@ -12,6 +12,12 @@ pub enum GatewayError {
 
     #[error("backend returned {status}: {body}")]
     BackendStatus { status: StatusCode, body: String },
+
+    #[error("queue is full, try again later")]
+    QueueFull,
+
+    #[error("scheduler stopped before answering")]
+    SchedulerGone,
 }
 
 impl GatewayError {
@@ -22,6 +28,14 @@ impl GatewayError {
             GatewayError::BackendUnreachable(_) => (StatusCode::BAD_GATEWAY, "backend_unreachable"),
             // The backend answered, but unhappily -> 502 as well.
             GatewayError::BackendStatus { .. } => (StatusCode::BAD_GATEWAY, "backend_error"),
+            // The queue is full. Turning work away is correct behaviour here,
+            // not a failure: 429 tells the client to come back.
+            GatewayError::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
+            // The scheduler died or shut down mid-request. That is our bug,
+            // not the client's, so 500 rather than 502.
+            GatewayError::SchedulerGone => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "scheduler_unavailable")
+            }
         }
     }
 }

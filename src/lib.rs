@@ -1,4 +1,5 @@
 pub mod error;
+pub mod scheduler;
 pub mod telemetry;
 pub mod types;
 
@@ -128,7 +129,7 @@ async fn stream_completion(
 }
 
 /// Send the request upstream and reject any non-2xx reply.
-async fn send_to_backend(
+pub(crate) async fn send_to_backend(
     state: &AppState,
     req: &ChatCompletionRequest,
 ) -> Result<reqwest::Response, GatewayError> {
