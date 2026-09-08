@@ -187,7 +187,17 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, state: Arc<AppState>, cfg: S
         // │ you need both for the writeup.                               │
         // └──────────────────────────────────────────────────────────────┘
 
-        todo!("scheduler loop")
+        let batch_size = batch.len();
+        let queue_wait = batch[0].enqueued_at.elapsed(); // how long the first req waited
+
+        tracing::info!(
+            batch_size = batch_size,
+            queue_wait_ms = queue_wait.as_millis(),
+            "dispatching batch"
+        );
+        for item in batch {
+            tokio::spawn(dispatch(state.clone(), item))
+        }
     }
 }
 
