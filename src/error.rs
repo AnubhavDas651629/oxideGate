@@ -15,6 +15,12 @@ pub enum GatewayError {
 
     #[error("backend returned {status}: {body}")]
     BackendStatus { status: StatusCode, body: String },
+
+    #[error("Too many requests")]
+    OueueFull,
+
+    #[error("Scheduler crashed or shut down")]
+    SchedulerGone,
 }
 
 impl GatewayError {
@@ -25,6 +31,8 @@ impl GatewayError {
             GatewayError::BackendUnreachable(_) => (StatusCode::BAD_GATEWAY, "backend_unreachable"),
             //the backend answered, but unhappily -> 502 as well
             GatewayError::BackendStatus { .. } => (StatusCode::BAD_GATEWAY, "backend_error"),
+            GatewayError::OueueFull => (StatusCode::TOO_MANY_REQUESTS, "queu_full"),
+            GatewayError::SchedulerGone => (StatusCode::INTERNAL_SERVER_ERROR, "scheduler_gone"),
         }
     }
 }
