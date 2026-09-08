@@ -61,6 +61,9 @@ impl SchedulerHandle {
         // │ `tx` goes into the queue with the request; you keep `rx`.    │
         // └──────────────────────────────────────────────────────────────┘
 
+        // rx effectivly sleeps while tx is in the queue and wakes up when tx returns after getting the response from AI
+        let (tx, rx) = oneshot::channel();
+
         // ┌── TODO 2 ────────────────────────────────────────────────────┐
         // │ Build a QueuedRequest and put it on the queue.               │
         // │                                                              │
@@ -71,6 +74,16 @@ impl SchedulerHandle {
         // │                                                              │
         // │ On failure return Err(GatewayError::QueueFull) -> 429.       │
         // └──────────────────────────────────────────────────────────────┘
+
+        let queued_req = QueuedRequest {
+            req,
+            respond_to: tx,
+            enqueued_at: Instant::now(),
+        };
+
+        if let Err(_) = self.tx.try_send(queued_req) {
+            return Err(GatewarError::QueueFull);
+        }
 
         // ┌── TODO 3 ────────────────────────────────────────────────────┐
         // │ Wait on the buzzer: `rx.await`.                              │
@@ -84,7 +97,10 @@ impl SchedulerHandle {
         // │ buzzer work", the inner is "did the request succeed".        │
         // └──────────────────────────────────────────────────────────────┘
 
-        todo!("SchedulerHandle::submit")
+        match rx.await {
+            Ok(reply) => reply,
+            Err(_) => Err(GatewarError::SchedulerGone),
+        }
     }
 }
 
