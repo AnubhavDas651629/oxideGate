@@ -42,14 +42,14 @@ pub struct SchedulerConfig {
     pub queue_depth: usize,
     /// The batching window. `Duration::ZERO` disables it — that is the
     /// control case for Experiment 1, and the default.
-    pub window: Duration,
+    pub window: Duration, //Duration -> is a span of time, Instant -> is an instant of time
 }
 
 /// Handed to request handlers so they can submit work. Cloning is cheap:
 /// it only clones the sending end of the channel.
 #[derive(Clone)]
 pub struct SchedulerHandle {
-    tx: mpsc::Sender<QueuedRequest>,
+    tx: mpsc::Sender<QueuedRequest>, // multi producer - single consumer, where multiple many tasks can send, but only one could read
 }
 
 impl SchedulerHandle {
@@ -127,6 +127,7 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, state: Arc<AppState>, cfg: S
         // │ this spins forever burning CPU.                              │
         // └──────────────────────────────────────────────────────────────┘
         let first = match rx.recv().await {
+            // recv is used for retreiving messages(only Some and None, not Ok and Err) from mpsc::
             Some(req) => req,
             None => break,
         };
@@ -216,5 +217,13 @@ async fn dispatch(state: Arc<AppState>, item: QueuedRequest) {
     // │ bug: log it at debug and move on. Do not panic.                  │
     // └──────────────────────────────────────────────────────────────────┘
 
-    todo!("dispatch")
+    // Step 1: Call the backend and get either a live Response or an error
+    let result = crate::send_to_backend(&state, &item.req).await;
+
+    // Step 2: Buzz the result back through the oneshot to the sleeping HTTP handler.
+    // .send() consumes item.respond_to — it can fire exactly once, which is correct.
+    // Err(_) here means the client disconnected while waiting — normal, not a bug.
+    if let Err(_) = item.respond_to.send(result) {
+        tracing::debug!("client hung up before response was delivered");
+    }
 }
