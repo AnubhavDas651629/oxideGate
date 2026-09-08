@@ -76,6 +76,7 @@ impl SchedulerHandle {
         // └──────────────────────────────────────────────────────────────┘
 
         let queued_req = QueuedRequest {
+            // queued_req is the package that gets dropped into the one shared queue
             req,
             respond_to: tx,
             enqueued_at: Instant::now(),
@@ -98,6 +99,7 @@ impl SchedulerHandle {
         // └──────────────────────────────────────────────────────────────┘
 
         match rx.await {
+            //rx.await gives us a "Result"defined above, which could be Ok(reply), or and error
             Ok(reply) => reply,
             Err(_) => Err(GatewarError::SchedulerGone),
         }
@@ -124,6 +126,10 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, state: Arc<AppState>, cfg: S
         // │ the gateway is shutting down. Break the loop on None, or     │
         // │ this spins forever burning CPU.                              │
         // └──────────────────────────────────────────────────────────────┘
+        let first = match rx.recv().await {
+            Some(req) => req,
+            None => break,
+        };
 
         // ┌── TODO 5 ────────────────────────────────────────────────────┐
         // │ Collect a batch.                                             │
@@ -147,6 +153,25 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, state: Arc<AppState>, cfg: S
         // │                                                              │
         // │ With window == ZERO, skip all of this: batch is just [first].│
         // └──────────────────────────────────────────────────────────────┘
+
+        let mut batch = vec![first];
+
+        if cfg.window != Duration::ZERO {
+            let deadline = Instant::now() + cfg.window;
+            loop {
+                // check how much time is left before deadline
+                // checked_duration_since -> standard rust fn to find time between instant::now()
+                let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+                    break;
+                };
+
+                match tokio::time::timeout(left, rx.recv()).await {
+                    Ok(Some(req)) => batch.push(req),
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        }
 
         // ┌── TODO 6 ──── the one from the puzzle ───────────────────────┐
         // │ Dispatch the batch.                                          │
