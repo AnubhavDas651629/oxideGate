@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::error::GatewayError;
 use crate::types::ChatCompletionRequest;
-use crate::AppState;
+use crate::{telemetry, Backend};
 
 pub type Reply = Result<reqwest::Response, GatewayError>;
 
@@ -47,13 +47,13 @@ impl SchedulerHandle {
     }
 }
 
-pub fn spawn(state: Arc<AppState>, cfg: SchedulerConfig) -> SchedulerHandle {
+pub fn spawn(backend: Arc<Backend>, cfg: SchedulerConfig) -> SchedulerHandle {
     let (tx, rx) = mpsc::channel(cfg.queue_depth);
-    tokio::spawn(run(rx, state, cfg));
+    tokio::spawn(run(rx, backend, cfg));
     SchedulerHandle { tx }
 }
 
-async fn run(mut rx: mpsc::Receiver<QueuedRequest>, state: Arc<AppState>, cfg: SchedulerConfig) {
+async fn run(mut rx: mpsc::Receiver<QueuedRequest>, backend: Arc<Backend>, cfg: SchedulerConfig) {
     loop {
         let first = match rx.recv().await {
             Some(req) => req,
@@ -80,19 +80,26 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, state: Arc<AppState>, cfg: S
         let batch_size = batch.len();
         let queue_wait = batch[0].enqueued_at.elapsed();
 
+        metrics::histogram!(telemetry::BATCH_SIZE).record(batch_size as f64);
+
         tracing::info!(
             batch_size = batch_size,
-            queue_wait_ms = queue_wait.as_millis(),
+            first_waited_ms = queue_wait.as_millis(),
             "dispatching batch"
         );
         for item in batch {
-            tokio::spawn(dispatch(state.clone(), item));
+            tokio::spawn(dispatch(backend.clone(), item));
         }
     }
 }
 
-async fn dispatch(state: Arc<AppState>, item: QueuedRequest) {
-    let result = crate::send_to_backend(&state, &item.req).await;
+async fn dispatch(backend: Arc<Backend>, item: QueuedRequest) {
+    // Per-request queue wait. batch[0] waited longest; recording it here,
+    // once per request, is what gives usable percentiles rather than a
+    // worst-case log line.
+    metrics::histogram!(telemetry::QUEUE_WAIT).record(item.enqueued_at.elapsed().as_secs_f64());
+
+    let result = backend.send(&item.req).await;
 
     if item.respond_to.send(result).is_err() {
         tracing::debug!("client hung up before response was delivered");

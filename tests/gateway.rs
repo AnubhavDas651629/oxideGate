@@ -3,7 +3,8 @@
 //! routing, extraction, serialisation and error mapping the way a client does.
 
 use axum::{routing::post, Json, Router};
-use oxidegate::{build_router, telemetry, AppState};
+use oxidegate::scheduler::{self, SchedulerConfig};
+use oxidegate::{build_router, telemetry, AppState, Backend};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -28,14 +29,29 @@ async fn spawn_backend(router: Router) -> String {
     format!("http://{addr}/v1")
 }
 
-/// Spawn the gateway pointed at `backend_url`. Returns its base URL.
+/// Spawn the gateway pointed at `backend_url`, batching off. Returns its URL.
 async fn spawn_gateway(backend_url: String) -> String {
-    let state = Arc::new(AppState {
+    spawn_gateway_with(backend_url, Duration::ZERO, 100).await
+}
+
+/// Spawn the gateway with an explicit batching window and queue depth.
+async fn spawn_gateway_with(backend_url: String, window: Duration, queue_depth: usize) -> String {
+    let backend = Arc::new(Backend {
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap(),
-        backend_url,
+        url: backend_url,
+    });
+    let scheduler = scheduler::spawn(
+        backend,
+        SchedulerConfig {
+            queue_depth,
+            window,
+        },
+    );
+    let state = Arc::new(AppState {
+        scheduler,
         metrics: metrics_handle(),
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -252,5 +268,128 @@ async fn metrics_endpoint_reports_request_counts() {
     assert!(
         text.contains(r#"outcome="ok""#),
         "missing ok outcome:\n{text}"
+    );
+}
+
+// ── scheduler ────────────────────────────────────────────────────────────
+
+/// A backend that replies instantly, so any measured delay is ours.
+async fn spawn_instant_backend() -> String {
+    spawn_backend(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { Json(completion_body("instant")) }),
+    ))
+    .await
+}
+
+#[tokio::test]
+async fn window_zero_does_not_delay_a_request() {
+    let gw = spawn_gateway_with(spawn_instant_backend().await, Duration::ZERO, 100).await;
+
+    let start = std::time::Instant::now();
+    let resp = reqwest::Client::new()
+        .post(format!("{gw}/v1/chat/completions"))
+        .json(&request_body())
+        .send()
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    assert_eq!(resp.status(), 200);
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "control case should be fast, took {elapsed:?}"
+    );
+}
+
+/// The heart of Experiment 1, as a test: a lone request still pays the full
+/// window, because the scheduler waits for companions that never arrive.
+#[tokio::test]
+async fn batching_window_delays_a_lone_request_by_the_full_window() {
+    let window = Duration::from_millis(200);
+    let gw = spawn_gateway_with(spawn_instant_backend().await, window, 100).await;
+
+    let start = std::time::Instant::now();
+    let resp = reqwest::Client::new()
+        .post(format!("{gw}/v1/chat/completions"))
+        .json(&request_body())
+        .send()
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    assert_eq!(resp.status(), 200);
+    assert!(
+        elapsed >= window,
+        "a lone request must wait out the whole window; took {elapsed:?}, window {window:?}"
+    );
+}
+
+/// Streaming has to survive the trip through the queue. This is the
+/// regression that would otherwise be found by hand, late.
+#[tokio::test]
+async fn streaming_still_works_through_the_scheduler() {
+    let backend = spawn_backend(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                "data: {\"choices\":[{\"delta\":{\"content\":\"q\"}}]}\n\ndata: [DONE]\n\n",
+            )
+        }),
+    ))
+    .await;
+    let gw = spawn_gateway_with(backend, Duration::from_millis(20), 100).await;
+
+    let mut body = request_body();
+    body["stream"] = json!(true);
+
+    let resp = reqwest::Client::new()
+        .post(format!("{gw}/v1/chat/completions"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let text = resp.text().await.unwrap();
+    assert!(text.contains(r#""content":"q""#), "got: {text}");
+    assert!(text.trim().ends_with("data: [DONE]"), "got: {text}");
+}
+
+/// The queue-wait histogram must actually be populated, or Experiment 1 has
+/// no data to plot.
+#[tokio::test]
+async fn queue_wait_is_recorded() {
+    let gw = spawn_gateway_with(
+        spawn_instant_backend().await,
+        Duration::from_millis(30),
+        100,
+    )
+    .await;
+
+    reqwest::Client::new()
+        .post(format!("{gw}/v1/chat/completions"))
+        .json(&request_body())
+        .send()
+        .await
+        .unwrap();
+
+    let text = reqwest::get(format!("{gw}/metrics"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert!(
+        text.contains(telemetry::QUEUE_WAIT),
+        "missing {} in:\n{text}",
+        telemetry::QUEUE_WAIT
+    );
+    assert!(
+        text.contains(telemetry::BATCH_SIZE),
+        "missing {}",
+        telemetry::BATCH_SIZE
     );
 }
