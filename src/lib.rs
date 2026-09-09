@@ -1,4 +1,5 @@
 pub mod error;
+pub mod scheduler;
 pub mod telemetry;
 pub mod types;
 
@@ -19,12 +20,43 @@ use std::time::Instant;
 use tracing::info;
 
 use error::GatewayError;
+use scheduler::SchedulerHandle;
 use types::{ChatCompletionRequest, ChatCompletionResponse};
 
-/// Shared, read-only state handed to every request handler.
-pub struct AppState {
+/// Everything needed to talk to the model backend.
+///
+/// Kept separate from AppState to break a cycle: the scheduler needs this to
+/// do its work, and AppState needs the scheduler. Splitting the backend out
+/// means each is built once, in order, with no chicken-and-egg.
+pub struct Backend {
     pub http: reqwest::Client,
-    pub backend_url: String,
+    pub url: String,
+}
+
+impl Backend {
+    /// Send one request upstream and reject any non-2xx reply.
+    pub async fn send(
+        &self,
+        req: &ChatCompletionRequest,
+    ) -> Result<reqwest::Response, GatewayError> {
+        let url = format!("{}/chat/completions", self.url);
+        let resp = self.http.post(&url).json(req).send().await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(GatewayError::BackendStatus { status, body });
+        }
+
+        Ok(resp)
+    }
+}
+
+/// Shared, read-only state handed to every request handler.
+///
+/// Handlers no longer hold the backend: everything goes through the queue.
+pub struct AppState {
+    pub scheduler: SchedulerHandle,
     pub metrics: PrometheusHandle,
 }
 
@@ -48,24 +80,28 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
-/// One entry point, two shapes of reply: streamed or buffered.
 async fn chat_completions_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Response, GatewayError> {
+    // The clock starts HERE, before the request enters the queue.
+    //
+    // Starting it after submit() returns would hide the queue wait entirely,
+    // and the batching window's cost is exactly what Experiment 1 measures.
+    // A stopwatch started after the wait would report a flat line and look
+    // like a result rather than a bug.
+    let arrived = Instant::now();
+    let wants_stream = req.stream;
+
     info!(
         model = %req.model,
         messages = req.messages.len(),
-        stream = req.stream,
-        "forwarding to backend"
+        stream = wants_stream,
+        "request received"
     );
 
     gauge!(telemetry::INFLIGHT).increment(1.0);
-    let result = if req.stream {
-        stream_completion(&state, req).await
-    } else {
-        buffered_completion(&state, req).await
-    };
+    let result = serve(&state, req, wants_stream, arrived).await;
     gauge!(telemetry::INFLIGHT).decrement(1.0);
 
     let outcome = if result.is_ok() { "ok" } else { "error" };
@@ -74,16 +110,32 @@ async fn chat_completions_handler(
     result
 }
 
-/// Wait for the whole reply, parse it, hand it back.
-async fn buffered_completion(
+/// Queue the request, then shape the reply.
+async fn serve(
     state: &AppState,
     req: ChatCompletionRequest,
+    wants_stream: bool,
+    arrived: Instant,
 ) -> Result<Response, GatewayError> {
-    let started = Instant::now();
-    let resp = send_to_backend(state, &req).await?;
+    // Everything now goes through the scheduler. This await covers the queue
+    // wait as well as the backend call.
+    let resp = state.scheduler.submit(req).await?;
+
+    if wants_stream {
+        Ok(stream_response(resp, arrived))
+    } else {
+        buffered_response(resp, arrived).await
+    }
+}
+
+/// Wait for the whole reply, parse it, hand it back.
+async fn buffered_response(
+    resp: reqwest::Response,
+    arrived: Instant,
+) -> Result<Response, GatewayError> {
     let parsed: ChatCompletionResponse = resp.json().await?;
 
-    let elapsed = started.elapsed();
+    let elapsed = arrived.elapsed();
     histogram!(telemetry::REQUEST_DURATION).record(elapsed.as_secs_f64());
 
     info!(
@@ -96,27 +148,21 @@ async fn buffered_completion(
 }
 
 /// Pipe the backend's SSE frames straight through to the client.
-async fn stream_completion(
-    state: &AppState,
-    req: ChatCompletionRequest,
-) -> Result<Response, GatewayError> {
-    let started = Instant::now();
-    let resp = send_to_backend(state, &req).await?;
-
+fn stream_response(resp: reqwest::Response, arrived: Instant) -> Response {
     // Bytes are forwarded untouched. We only observe them to record
-    // time-to-first-token, which is the metric Phase 2 is built around.
+    // time-to-first-token, measured from arrival so the queue wait counts.
     let mut seen_first = false;
     let byte_stream = resp.bytes_stream().map(move |chunk| {
         if !seen_first {
             seen_first = true;
-            let ttft = started.elapsed();
+            let ttft = arrived.elapsed();
             histogram!(telemetry::TTFT).record(ttft.as_secs_f64());
             info!(ttft_ms = ttft.as_millis(), "first token");
         }
         chunk
     });
 
-    Ok((
+    (
         [
             (header::CONTENT_TYPE, "text/event-stream"),
             (header::CACHE_CONTROL, "no-cache"),
@@ -124,22 +170,5 @@ async fn stream_completion(
         ],
         Body::from_stream(byte_stream),
     )
-        .into_response())
-}
-
-/// Send the request upstream and reject any non-2xx reply.
-pub(crate) async fn send_to_backend(
-    state: &AppState,
-    req: &ChatCompletionRequest,
-) -> Result<reqwest::Response, GatewayError> {
-    let url = format!("{}/chat/completions", state.backend_url);
-    let resp = state.http.post(&url).json(req).send().await?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(GatewayError::BackendStatus { status, body });
-    }
-
-    Ok(resp)
+        .into_response()
 }
