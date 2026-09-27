@@ -20,7 +20,7 @@ use std::time::Instant;
 use tracing::info;
 
 use error::GatewayError;
-use scheduler::SchedulerHandle;
+use scheduler::{BackendSlot, Dispatched, SchedulerHandle};
 use types::{ChatCompletionRequest, ChatCompletionResponse};
 
 /// Everything needed to talk to the model backend.
@@ -104,7 +104,13 @@ async fn chat_completions_handler(
     let result = serve(&state, req, wants_stream, arrived).await;
     gauge!(telemetry::INFLIGHT).decrement(1.0);
 
-    let outcome = if result.is_ok() { "ok" } else { "error" };
+    // "rejected" is split out from "error": a 429 is admission control
+    // doing its job, not something broken, and the two need separate curves.
+    let outcome = match &result {
+        Ok(_) => "ok",
+        Err(GatewayError::QueueFull) => "rejected",
+        Err(_) => "error",
+    };
     counter!(telemetry::REQUESTS_TOTAL, "outcome" => outcome).increment(1);
 
     result
@@ -119,21 +125,24 @@ async fn serve(
 ) -> Result<Response, GatewayError> {
     // Everything now goes through the scheduler. This await covers the queue
     // wait as well as the backend call.
-    let resp = state.scheduler.submit(req).await?;
+    let Dispatched { resp, slot } = state.scheduler.submit(req).await?;
 
     if wants_stream {
-        Ok(stream_response(resp, arrived))
+        Ok(stream_response(resp, slot, arrived))
     } else {
-        buffered_response(resp, arrived).await
+        buffered_response(resp, slot, arrived).await
     }
 }
 
 /// Wait for the whole reply, parse it, hand it back.
 async fn buffered_response(
     resp: reqwest::Response,
+    slot: BackendSlot,
     arrived: Instant,
 ) -> Result<Response, GatewayError> {
     let parsed: ChatCompletionResponse = resp.json().await?;
+    // The whole body is in hand; the backend is done with this request.
+    drop(slot);
 
     let elapsed = arrived.elapsed();
     histogram!(telemetry::REQUEST_DURATION).record(elapsed.as_secs_f64());
@@ -148,11 +157,20 @@ async fn buffered_response(
 }
 
 /// Pipe the backend's SSE frames straight through to the client.
-fn stream_response(resp: reqwest::Response, arrived: Instant) -> Response {
+fn stream_response(resp: reqwest::Response, slot: BackendSlot, arrived: Instant) -> Response {
     // Bytes are forwarded untouched. We only observe them to record
     // time-to-first-token, measured from arrival so the queue wait counts.
     let mut seen_first = false;
     let byte_stream = resp.bytes_stream().map(move |chunk| {
+        // Keeps the backend slot alive for exactly as long as this stream.
+        //
+        // A `move` closure only captures variables it mentions, so without
+        // this line `slot` would be dropped as soon as this function
+        // returned — freeing the slot while tokens are still flowing, and
+        // letting the limiter over-admit. Mentioning it moves it into the
+        // closure; the closure lives inside the response body; the body is
+        // dropped when the last byte is sent or the client disconnects.
+        let _ = &slot;
         if !seen_first {
             seen_first = true;
             let ttft = arrived.elapsed();

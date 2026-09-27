@@ -11,6 +11,14 @@ pub const INFLIGHT: &str = "oxidegate_inflight_requests";
 pub const QUEUE_WAIT: &str = "oxidegate_queue_wait_seconds";
 /// How many requests each dispatch actually gathered.
 pub const BATCH_SIZE: &str = "oxidegate_batch_size";
+/// Requests waiting in our queue right now. With the in-flight limiter on,
+/// this is where the backlog lives — visible and sheddable.
+pub const QUEUE_DEPTH: &str = "oxidegate_queue_depth";
+/// Requests currently occupying a backend slot (from dispatch until the
+/// last byte is forwarded). Capped by max_inflight when the limiter is on.
+pub const BACKEND_INFLIGHT: &str = "oxidegate_backend_inflight";
+/// Requests dropped from the queue because the client hung up while waiting.
+pub const ABANDONED_TOTAL: &str = "oxidegate_abandoned_total";
 
 /// Explicit buckets. The defaults are tuned for millisecond web handlers;
 /// inference spans milliseconds to minutes, so the range has to be wider or

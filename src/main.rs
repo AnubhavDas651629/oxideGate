@@ -28,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
     // Experiment 1, so the honest default is the one that adds nothing.
     let window_ms: u64 = env_num("OXIDEGATE_BATCH_WINDOW_MS", 0);
     let queue_depth: usize = env_num("OXIDEGATE_QUEUE_DEPTH", 100);
+    // 0 = no limit: every request goes straight to the backend, which is
+    // the pre-limiter behaviour and Experiment 2's control.
+    let max_inflight: usize = env_num("OXIDEGATE_MAX_INFLIGHT", 0);
 
     let metrics = telemetry::install()?;
 
@@ -45,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg = SchedulerConfig {
         queue_depth,
         window: Duration::from_millis(window_ms),
+        max_inflight,
     };
     let scheduler = scheduler::spawn(backend, cfg);
 
@@ -59,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         backend = %backend_url,
         batch_window_ms = window_ms,
         queue_depth,
+        max_inflight,
         "oxideGate listening on {bind_addr}"
     );
 
