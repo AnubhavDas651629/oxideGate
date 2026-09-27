@@ -1,0 +1,14 @@
+target http://127.0.0.1:8100 · 300 requests · 20 concurrent · stream=true · closed loop
+warmup done (40 requests discarded, 0 failed)
+
+── results: A limit=16 rep2 ──────────────────────────────────────
+requests    300 ok · 0 failed (0 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   49.19 s
+throughput  6.10 req/s
+                  p50       p95       p99       max
+TTFT (ms)      2824.2    2854.9    2869.2    4812.8
+E2E (ms)       3276.8    3311.6    3326.0    5259.3
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| A limit=16 rep2 | 300 | 0 | 6.10 | 2824.2 | 2854.9 | 2869.2 | 3276.8 | 3311.6 | 3326.0 |

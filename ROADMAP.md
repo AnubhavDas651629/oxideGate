@@ -7,9 +7,9 @@ way it did once already (see the Sep 27 note below).
 
 - Start: 2026-08-27 · Original target: 2026-10-22 (8 weeks)
 - **Revised target: 2026-10-15.** Full scope kept — see "Compressed schedule."
-- Status as of 2026-09-27 (evening): Phase 1 and 1.5 complete. **Block A done,
-  3 days early** — load generator built, Experiment 1 run and written up
-  (`WRITEUP-1.md`). Next: Block B.
+- Status as of 2026-09-27 (evening): Phase 1, 1.5 and **Phase 2 complete**
+  (Blocks A and B, both well ahead of Sep 30 / Oct 3). Experiments 1 and 2
+  run and written up in `WRITEUP-1.md`. Next: Block C (multi-tenancy).
 
 ---
 
@@ -150,7 +150,7 @@ absorb it.
 | Block | Target | Contains |
 |---|---|---|
 | **A** ✅ | Sep 30 — done Sep 27 | Cleanup (done, see Sep 27 note) + load generator + **Experiment 1** run + findings written up |
-| **B** | Oct 3 | In-flight concurrency limiter + **Experiment 2** + admission control actually sized and meaningful (closes D5) — **Phase 2 done** |
+| **B** ✅ | Oct 3 — done Sep 27 | In-flight concurrency limiter + **Experiment 2** + admission control actually sized and meaningful (closes D5) — **Phase 2 done** |
 | **C** | Oct 7 | Tenant model, quotas, weighted fair queue + **Experiment 3** (fairness) + **Experiment 4** (contention cost, D2) — **Phase 3 done** |
 | **D** | Oct 11 | Health probes, circuit breaker, no-retry-after-stream, fault injection harness, load suite at 10/50/100/500, flamegraph + one measured optimisation — **Phase 4 done** |
 | **E** | Oct 14 | Both writeups, README with latency table — **Phase 5 done** |
@@ -206,9 +206,23 @@ typed errors mapped to 502; Docker + Compose.
 
 #### 2b — build on it (Block B)
 
-- [ ] In-flight concurrency limiter (replaces the window as the real knob)
-- [ ] **Experiment 2** — limit 1/2/4/8/16/32, expect a knee
-- [ ] Admission control sized by Experiment 2's result (closes D5)
+- [x] In-flight concurrency limiter (replaces the window as the real knob)
+      *(Sep 27, `8824cef`. `OXIDEGATE_MAX_INFLIGHT`, 0 = unlimited. Slot is
+      taken before dequeue, so a full backend stops the queue draining; the
+      slot is held until a stream's last byte. 5 new load tests, 16/16.)*
+- [x] **Experiment 2** — limit 1/2/4/8/16/32, expect a knee
+      *(Sep 27. Knee exactly at the mock's capacity (4): throughput
+      1.48/2.94/5.92 then flat. Client latency identical for every limit >=4
+      (Little's law again); what changes is where the wait lives — 75% in our
+      queue at limit 4, 0% unlimited. Data: `bench/exp2/`.)*
+- [x] Admission control sized by Experiment 2's result (closes D5)
+      *(Open loop at 1.7x capacity: unlimited = 0 rejections, TTFT p99 20.7s;
+      limit 4 + queue 12 (= 2s budget x 5.9 req/s) = 37% rejected, accepted
+      TTFT p99 2.25s, same throughput. Default queue depth 100 = 17s budget,
+      too loose to matter. Code defaults left at off/100 because the right
+      values are backend-specific; startup now warns when the limiter is
+      off. **Open item for Block E:** docker-compose must set these for
+      whatever backend it ships with, or `compose up` reproduces D5.)*
 
 **Exit:** both curves plotted and explainable; queue rejection actually happens
 under load, not just in a unit test.

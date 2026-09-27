@@ -1,0 +1,6 @@
+# TYPE oxidegate_requests_total counter
+oxidegate_requests_total{outcome="ok"} 297
+oxidegate_requests_total{outcome="rejected"} 23
+# TYPE oxidegate_queue_wait_seconds histogram
+oxidegate_queue_wait_seconds_sum 2617.70219105
+oxidegate_queue_wait_seconds_count 297

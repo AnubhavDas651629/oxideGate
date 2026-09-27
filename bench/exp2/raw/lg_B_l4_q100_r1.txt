@@ -1,0 +1,14 @@
+target http://127.0.0.1:8100 · 300 requests · 400 concurrent · stream=true · open loop @ 10 req/s
+warmup done (20 requests discarded, 0 failed)
+
+── results: B limit=4 queue=100 rep1 ──────────────────────────────────────
+requests    277 ok · 23 failed (23 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   47.48 s
+throughput  5.83 req/s
+                  p50       p95       p99       max
+TTFT (ms)      9674.8   17121.3   17170.4   17186.8
+E2E (ms)      10149.9   17596.4   17645.6   17662.0
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| B limit=4 queue=100 rep1 | 277 | 23 | 5.83 | 9674.8 | 17121.3 | 17170.4 | 10149.9 | 17596.4 | 17645.6 |

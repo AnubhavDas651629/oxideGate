@@ -3,7 +3,7 @@ use oxidegate::scheduler::{self, SchedulerConfig};
 use oxidegate::{build_router, telemetry, AppState, Backend};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Read a number from the environment, falling back to `default`.
 fn env_num<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -50,6 +50,16 @@ async fn main() -> anyhow::Result<()> {
         window: Duration::from_millis(window_ms),
         max_inflight,
     };
+    if max_inflight == 0 {
+        // Not an error — it is Experiment 2's control — but it should never
+        // be silent: with no limit, the backlog forms inside the backend,
+        // the queue never fills, and admission control cannot shed load.
+        warn!(
+            "OXIDEGATE_MAX_INFLIGHT=0: in-flight limiter disabled; the 429 \
+             path will not engage under load. Set it to the backend's \
+             measured capacity (see WRITEUP-1.md, Experiment 2)."
+        );
+    }
     let scheduler = scheduler::spawn(backend, cfg);
 
     let state = Arc::new(AppState { scheduler, metrics });

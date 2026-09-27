@@ -1,7 +1,7 @@
 # I built a batching layer and measured it into the ground
 
-*Draft 1 — Sep 27, 2026. Experiment 1 of oxideGate. Raw data and the script
-that produced it are in [`bench/exp1/`](bench/exp1/).*
+*Draft 1 — Sep 27, 2026. Experiments 1 and 2 of oxideGate. Raw data and the scripts
+that produced them are in [`bench/`](bench/).*
 
 ## The idea I started with
 
@@ -232,25 +232,123 @@ model.
   well inside the project's ±5% reproducibility target, but three samples
   can't describe rare stalls like the one at c = 4, window = 5.
 
-## What this changes
+## What this changed: Experiment 2, the in-flight limit
 
-- The batching window stays in the code as an experiment switch, defaulted
-  to 0. It's a measured negative result, not a feature.
-- The real control is the **in-flight concurrency limit** (D1). Its purpose
-  is to move the c = 20 queue out of the backend and into the gateway,
-  where admission control (D5) and fair queueing (Phase 3) can act on it.
-  Experiment 2 sweeps that limit at 1/2/4/8/16/32 against the same mock.
-  The prediction: throughput rises until the limit matches the backend's
-  capacity (4), then stays flat, while TTFT at the backend stays flat until
-  the limit passes 4 and then climbs. That means the "knee" should sit at
-  the backend's capacity, and the whole point of the limiter is to operate
-  at that knee.
+The batching window stays in the code as an experiment switch, defaulted
+to 0. It's a measured negative result, not a feature.
+
+The real control is the **in-flight concurrency limit** (D1),
+`OXIDEGATE_MAX_INFLIGHT`: the most requests the gateway will have at the
+backend at once. The scheduler takes a backend slot *before* pulling the
+next request off its queue. So when the backend is full the queue stops
+draining, and requests wait in *our* queue instead of the backend's. A
+slot is held until the last byte of a streamed reply, not until the
+headers arrive. There's a test that fails if that ever regresses. The
+failure would compile without a warning.
+
+### Part A — where does the wait live?
+
+Same mock, closed loop at c = 20, 300 requests, 3 interleaved reps per
+limit. "Gateway queue wait" is the gateway's own mean for time spent in
+its queue. "At backend" is E2E p50 minus that.
+
+| limit | req/s | TTFT p50 (ms) | E2E p50 (ms) | E2E p99 | gateway queue wait (mean) | at backend (≈) |
+|---|---|---|---|---|---|---|
+| unlimited | 5.94 | 2885 | 3352 | 3428 | 0 ms | 3.35 s |
+| 1 | 1.48 | 13023 | 13492 | 13672 | 12078 ms | 1.4 s |
+| 2 | 2.94 | 6323 | 6799 | 6866 | 5757 ms | 1.0 s |
+| **4** | **5.92** | **2899** | **3368** | **3429** | **2541 ms** | **0.83 s** |
+| 8 | 5.91 | 2907 | 3378 | 3617* | 1883 ms | 1.5 s |
+| 16 | 5.99 | 2872 | 3336 | 3379 | 604 ms | 2.7 s |
+| 32 | 5.94 | 2888 | 3353 | 3431 | 0 ms | 3.35 s |
+
+\* One rep at limit 8 had a stall (p99 3979 ms); the other two were 3444
+and 3428.
+
+The knee is exactly where predicted. Throughput is
+`min(limit, 4) / 0.677 s`: 1.48 → 2.94 → 5.92 req/s, then flat. Below 4 the
+backend sits idle and every client pays for it: at limit 1, latency is
+4× worse. At 4 and above, client latency is identical across limits,
+within run-to-run noise. That's Little's law again, the same effect that
+hid the batching window in Experiment 1: 20 clients, fixed throughput,
+fixed latency.
+
+So the client can't see the difference between limit 4 and unlimited.
+What changes is the last two columns. At limit 4, three quarters of the
+wait happens in the gateway's queue. That's time the gateway can observe,
+reorder by tenant, and refuse. Unlimited, or any limit at or above the
+number of clients, puts the whole wait inside the backend, where it can't
+be seen or touched. Gateway queue wait falls linearly as the limit rises,
+because it equals `(20 − limit) / throughput`: 2.7 / 2.0 / 0.68 s
+predicted against 2.54 / 1.88 / 0.60 s measured. **The right limit is the
+smallest one that keeps the backend busy: its capacity.** Any higher and
+you give away control while gaining no throughput.
+
+### Part B — does admission control now do anything? (closes D5)
+
+Part A never shows a 429, because a closed loop can't overload anything:
+20 clients means at most 20 requests. Real overload means arrivals keep
+coming regardless. So: open loop, **10 req/s against a backend that serves
+5.9**, 300 requests, 3 reps each.
+
+| config | accepted | rejected (429) | req/s served | TTFT p50 (ms) | TTFT p99 | E2E p99 |
+|---|---|---|---|---|---|---|
+| unlimited, queue 100 | 300 | 0 | 5.86 | 10513 | 20726 | 21190 |
+| limit 4, queue 100 (default depth) | 277 | 23 | 5.83 | 9675 | 17198 | 17678 |
+| **limit 4, queue 12 (sized)** | **190** | **110** | **5.84** | **2154** | **2247** | **2722** |
+
+- **Unlimited:** nothing is ever refused. The backlog grows by about 4
+  requests every second for the whole run, and the last requests wait more
+  than 20 s for a first token. There's no ceiling, and the gateway reports
+  an empty queue the entire time.
+- **Limit 4, queue 100:** the mechanism works but is set far too loose. A
+  100-deep queue drained at 5.9 req/s holds 17 s of waiting, so the first
+  429 only arrives after the queue has filled, near the end of a 30 s run.
+  Accepted requests wait up to 17 s. The admission control is real, but it
+  doesn't help anyone.
+- **Limit 4, queue 12:** 37% of requests are refused immediately, and every
+  accepted request gets its first token within 2.25 s at p99, a tenth of
+  the unlimited tail. Theory says a backend serving 5.9 of 10 req/s must
+  turn away 41% of them; measured is 37%, the gap being the first seconds
+  of the run while the queue fills.
+
+In all three rows the backend served **the same ~5.85 req/s**. Admission
+control doesn't add capacity and doesn't cost any either. It chooses who
+waits: without it, everyone waits without limit; with it, some requests
+get a fast, honest "try again" and the rest get a bounded wait.
+
+### Sizing rule
+
+Both numbers come from measuring the backend, and neither is a constant
+that could live in the code:
+
+- **`max_inflight` = the backend's knee**: the smallest limit that reaches
+  full throughput. For the mock that's 4. For vLLM it depends on the model,
+  GPU and sequence lengths, and you find it by running Part A against that
+  backend.
+- **`queue_depth` = target max queue wait × measured throughput.** For a
+  2 s budget at 5.9 req/s, that's ≈ 12. The measured result: mean queue
+  wait 1.73 s, TTFT p99 2.25 s (the 2 s budget plus the 0.2 s prefill).
+
+The code defaults stay at "limiter off, depth 100". They preserve the
+control case, and there's no backend-independent value to choose. The
+gateway now logs a warning at startup when the limiter is off, so
+"admission control does nothing" is at least never silent.
+
+The same limitation from Experiment 1 applies, and it applies more
+strongly here: the mock's knee is a hard corner at exactly 4. On a GPU with
+continuous batching, throughput keeps rising slowly past the point where
+per-token latency starts to degrade. The knee there is a judgment about
+how much TTFT to trade for how much throughput, not a single point. The
+method (sweep the limit, read both curves) carries over; the clean corner
+doesn't.
 
 ## Reproduce
 
 ```sh
-bench/exp1/run.sh            # ~35 min; mock on :9100, gateway on :8100
+bench/exp1/run.sh            # Experiment 1, ~35 min; mock :9100, gateway :8100
+bench/exp2/run.sh            # Experiment 2, ~40 min
 ```
 
 Raw per-run output (loadgen reports plus gateway `/metrics` scrapes) for
-every number above, including the Ollama runs, is in `bench/exp1/raw/`.
+every number above, including the Ollama runs, is in `bench/exp1/raw/` and `bench/exp2/raw/`.
