@@ -1,0 +1,14 @@
+target http://127.0.0.1:8100 · 500 requests · 20 concurrent · stream=true · closed loop
+warmup done (40 requests discarded, 0 failed)
+
+── results: c=20 window=10ms rep1 ──────────────────────────────────────
+requests    500 ok · 0 failed (0 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   85.21 s
+throughput  5.87 req/s
+                  p50       p95       p99       max
+TTFT (ms)      2926.6    2955.3    2971.6    5636.1
+E2E (ms)       3403.8    3434.5    3448.8    6111.2
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| c=20 window=10ms rep1 | 500 | 0 | 5.87 | 2926.6 | 2955.3 | 2971.6 | 3403.8 | 3434.5 | 3448.8 |

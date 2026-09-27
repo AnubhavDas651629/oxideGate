@@ -1,0 +1,13 @@
+# TYPE oxidegate_queue_wait_seconds histogram
+oxidegate_queue_wait_seconds_sum 5.917517245000001
+oxidegate_queue_wait_seconds_count 540
+# TYPE oxidegate_batch_size summary
+oxidegate_batch_size{quantile="0"} 1
+oxidegate_batch_size{quantile="0.5"} 0.9998999999999999
+oxidegate_batch_size{quantile="0.9"} 0.9998999999999999
+oxidegate_batch_size{quantile="0.95"} 0.9998999999999999
+oxidegate_batch_size{quantile="0.99"} 0.9998999999999999
+oxidegate_batch_size{quantile="0.999"} 0.9998999999999999
+oxidegate_batch_size{quantile="1"} 2
+oxidegate_batch_size_sum 540
+oxidegate_batch_size_count 403

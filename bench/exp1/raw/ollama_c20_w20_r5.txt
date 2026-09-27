@@ -1,0 +1,14 @@
+target http://127.0.0.1:8100 · 300 requests · 20 concurrent · stream=true · closed loop
+warmup done (20 requests discarded, 0 failed)
+
+── results: ollama c=20 window=20ms rep5 ──────────────────────────────────────
+requests    300 ok · 0 failed (0 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   16.69 s
+throughput  17.97 req/s
+                  p50       p95       p99       max
+TTFT (ms)      1077.2    1145.9    1163.3    1183.7
+E2E (ms)       1123.3    1194.0    1218.6    1231.9
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| ollama c=20 window=20ms rep5 | 300 | 0 | 17.97 | 1077.2 | 1145.9 | 1163.3 | 1123.3 | 1194.0 | 1218.6 |

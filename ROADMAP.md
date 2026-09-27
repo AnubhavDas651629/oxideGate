@@ -7,9 +7,9 @@ way it did once already (see the Sep 27 note below).
 
 - Start: 2026-08-27 · Original target: 2026-10-22 (8 weeks)
 - **Revised target: 2026-10-15.** Full scope kept — see "Compressed schedule."
-- Status as of 2026-09-27: Phase 1 and Phase 1.5 complete. Phase 2 partially
-  built (scheduler + batching window exist and are tested); Experiment 1 not
-  yet run.
+- Status as of 2026-09-27 (evening): Phase 1 and 1.5 complete. **Block A done,
+  3 days early** — load generator built, Experiment 1 run and written up
+  (`WRITEUP-1.md`). Next: Block B.
 
 ---
 
@@ -26,6 +26,19 @@ fixed: a typo'd error code (`queu_full` → `queue_full`), and removed a
 
 Lesson for later phases: when picking work back up after a gap, diff the
 actual repo against this file before assuming either is right.
+
+---
+
+## 2026-09-27 Block A notes — things that didn't match the plan
+
+- The "green state" at `798c91e` wasn't green on this machine: clippy 1.98
+  flags `while_let_loop` in the batching loop. Fixed (`b777ca9`). No
+  toolchain is pinned, so clippy's lint set moves with whatever is installed.
+- Experiment 1's prediction ("pure cost") held only below saturation. At
+  saturation the cost is invisible end-to-end. That strengthens D1 rather
+  than contradicting it, but it is a different result from the one written
+  down in advance, and the writeup says so.
+- D5 now has a number: 3x over-capacity open-loop load produced **zero** 429s.
 
 ---
 
@@ -136,7 +149,7 @@ absorb it.
 
 | Block | Target | Contains |
 |---|---|---|
-| **A** | Sep 30 | Cleanup (done, see Sep 27 note) + load generator + **Experiment 1** run + findings written up |
+| **A** ✅ | Sep 30 — done Sep 27 | Cleanup (done, see Sep 27 note) + load generator + **Experiment 1** run + findings written up |
 | **B** | Oct 3 | In-flight concurrency limiter + **Experiment 2** + admission control actually sized and meaningful (closes D5) — **Phase 2 done** |
 | **C** | Oct 7 | Tenant model, quotas, weighted fair queue + **Experiment 3** (fairness) + **Experiment 4** (contention cost, D2) — **Phase 3 done** |
 | **D** | Oct 11 | Health probes, circuit breaker, no-retry-after-stream, fault injection harness, load suite at 10/50/100/500, flamegraph + one measured optimisation — **Phase 4 done** |
@@ -173,11 +186,23 @@ typed errors mapped to 502; Docker + Compose.
 - [x] `QueuedRequest` + oneshot response channel (D4)
 - [x] Queue + scheduler task; batching window configurable, `0` disables it
 - [x] Streaming preserved through the queue (regression-tested)
-- [ ] Load generator (`src/bin/loadgen.rs`): concurrency/RPS knobs, TTFT + E2E
-      percentiles via hdrhistogram
-- [ ] **Experiment 1** — window 0/5/10/20ms against the mock, `0` as control
-- [ ] Confirmation run against real Ollama
-- [ ] Writeup 1 draft: "I built a batching layer and deleted it"
+- [x] Load generator (`src/bin/loadgen.rs`): concurrency/RPS knobs, TTFT + E2E
+      percentiles via hdrhistogram *(Sep 27. Closed loop by default; `--rps`
+      is open loop, measured from scheduled send time to avoid coordinated
+      omission. Non-2xx and truncated streams count as failures — see commit.)*
+- [x] **Experiment 1** — window 0/5/10/20ms against the mock, `0` as control
+      *(Sep 27. Run at c=20 as planned **and** c=4. c=4: pure cost, TTFT
+      +window ms, throughput −4% at 20ms. c=20: zero visible effect — Little's
+      law hides it because the backend is saturated; gateway queue-wait shows
+      the cost is still paid. Not the flat "pure cost" predicted; explained in
+      the writeup. 3 reps each, spread <±1%. Data: `bench/exp1/`.)*
+- [x] Confirmation run against real Ollama
+      *(Sep 27, `gemma3:270m` — `qwen2.5:0.5b` not pulled locally. Surprise:
+      this Ollama runs `NUM_PARALLEL=1`, so c=4/c=20 were both saturated and
+      showed nothing through ±15% run-to-run drift. Confirmed at c=1: window
+      20ms costs +23ms TTFT, −24% throughput, 6/6 alternating pairs.)*
+- [x] Writeup 1 draft: `WRITEUP-1.md` *(the window is kept as a default-0
+      experiment switch rather than deleted — it's the control for the story)*
 
 #### 2b — build on it (Block B)
 
