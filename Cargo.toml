@@ -16,6 +16,8 @@ thiserror = "2"
 futures-util = "0.3"
 metrics = "0.24.6"
 metrics-exporter-prometheus = "0.18.3"
+clap = { version = "4", features = ["derive"] }
+hdrhistogram = "7"
 
 [profile.release]
 opt-level = 3
