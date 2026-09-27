@@ -64,11 +64,9 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, backend: Arc<Backend>, cfg: 
 
         if cfg.window != Duration::ZERO {
             let deadline = Instant::now() + cfg.window;
-            loop {
-                let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                    break;
-                };
-
+            // Keep collecting until the deadline passes. checked_duration_since
+            // returns None once `now` is past the deadline, which ends the loop.
+            while let Some(left) = deadline.checked_duration_since(Instant::now()) {
                 match tokio::time::timeout(left, rx.recv()).await {
                     Ok(Some(req)) => batch.push(req),
                     Ok(None) => break,
