@@ -1,0 +1,20 @@
+{
+  "tenants": [
+    {
+      "id": "paid",
+      "api_key": "key-paid",
+      "tier": "paid",
+      "tokens_per_minute": 100000000,
+      "requests_per_second": 1000,
+      "max_concurrent": 60
+    },
+    {
+      "id": "free",
+      "api_key": "key-free",
+      "tier": "free",
+      "tokens_per_minute": 100000000,
+      "requests_per_second": 1000,
+      "max_concurrent": 60
+    }
+  ]
+}

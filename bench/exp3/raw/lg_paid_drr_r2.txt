@@ -1,0 +1,13 @@
+target http://127.0.0.1:8100 · 120 requests · 100 concurrent · stream=true · open loop @ 2 req/s
+
+── results: paid drr rep2 ──────────────────────────────────────
+requests    120 ok · 0 failed (0 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   60.23 s
+throughput  1.99 req/s
+                  p50       p95       p99       max
+TTFT (ms)       356.9     641.5     699.9     742.9
+E2E (ms)        821.2    1111.0    1177.6    1221.6
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| paid drr rep2 | 120 | 0 | 1.99 | 356.9 | 641.5 | 699.9 | 821.2 | 1111.0 | 1177.6 |

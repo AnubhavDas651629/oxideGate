@@ -7,9 +7,9 @@ way it did once already (see the Sep 27 note below).
 
 - Start: 2026-08-27 · Original target: 2026-10-22 (8 weeks)
 - **Revised target: 2026-10-15.** Full scope kept — see "Compressed schedule."
-- Status as of 2026-09-27 (evening): Phase 1, 1.5 and **Phase 2 complete**
-  (Blocks A and B, both well ahead of Sep 30 / Oct 3). Experiments 1 and 2
-  run and written up in `WRITEUP-1.md`. Next: Block C (multi-tenancy).
+- Status as of 2026-09-28: Phases 1, 1.5, **2 and 3 complete** (Blocks A–C,
+  all ahead of target). Experiments 1–4 run and written up in
+  `WRITEUP-1.md`. Next: Block D (reliability + optimisation).
 
 ---
 
@@ -178,7 +178,7 @@ absorb it.
 |---|---|---|
 | **A** ✅ | Sep 30 — done Sep 27 | Cleanup (done, see Sep 27 note) + load generator + **Experiment 1** run + findings written up |
 | **B** ✅ | Oct 3 — done Sep 27 | In-flight concurrency limiter + **Experiment 2** + admission control actually sized and meaningful (closes D5) — **Phase 2 done** |
-| **C** | Oct 7 | Tenant model, quotas, weighted fair queue + **Experiment 3** (fairness) + **Experiment 4** (contention cost, D2) — **Phase 3 done** |
+| **C** ✅ | Oct 7 — done Sep 28 | Tenant model, quotas, weighted fair queue + **Experiment 3** (fairness) + **Experiment 4** (contention cost, D2) — **Phase 3 done** |
 | **D** | Oct 11 | Health probes, circuit breaker, no-retry-after-stream, fault injection harness, load suite at 10/50/100/500, flamegraph + one measured optimisation — **Phase 4 done** |
 | **E** | Oct 14 | Both writeups, README with latency table — **Phase 5 done** |
 | — | Oct 15 | Ship |
@@ -256,11 +256,22 @@ under load, not just in a unit test.
 
 ### Phase 3 — Multi-tenancy · Block C
 
-- [ ] Tenant model: id, tier, token budget, rate limit, concurrency cap
-- [ ] Quota checks at admission; token accounting on completion
-- [ ] Weighted fair queueing (free 0.5x, paid 1.0x)
-- [ ] **Experiment 3** — free-tier flood must not move paid-tier p99
-- [ ] **Experiment 4** — cost of counter contention at high concurrency (D2)
+- [x] Tenant model: id, tier, token budget, rate limit, concurrency cap *(Sep 28, `f547fad`; design in D6)*
+- [x] Quota checks at admission; token accounting on completion *(reserve/refund; streamed tokens counted by SSE frame)*
+- [x] Weighted fair queueing (free 0.5x, paid 1.0x) *(deficit round robin; `OXIDEGATE_FAIR_QUEUE=0` = FIFO control)*
+- [x] **Experiment 3** — free-tier flood must not move paid-tier p99
+      *(Sep 28. **Target not met literally, and that's the finding.** Paid
+      TTFT p99: alone 209ms, flood+FIFO 14.9s, flood+DRR 0.70s. The +0.49s
+      residual is non-preemptive head-of-line blocking at the backend —
+      bounded by one service time, scales with it (330ms service -> +177ms).
+      Removing it needs reserved paid capacity or preemption: a policy
+      choice, open for the author. Data: `bench/exp3/`.)*
+- [x] **Experiment 4** — cost of counter contention at high concurrency (D2)
+      *(Sep 28. Worst case, 16 threads on one tenant's lock: ~270ns/op,
+      ceiling ~3.7M admissions/s. Per-tenant locks scale (81->19ns), a
+      global lock doesn't (~170ns flat). Loopback TCP RTT 14.2us = ~50x the
+      worst contended admission; D2 holds. Found: Lease::drop allocates a
+      metric-label String per request — Block D optimisation candidate.)*
 
 **Exit:** fairness demonstrated with numbers, and its cost quantified.
 

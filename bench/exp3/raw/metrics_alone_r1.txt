@@ -1,0 +1,3 @@
+oxidegate_requests_total{outcome="ok",tenant="paid"} 120
+oxidegate_queue_wait_seconds_sum{tier="paid"} 0.0037540850000000008
+oxidegate_queue_wait_seconds_count{tier="paid"} 120

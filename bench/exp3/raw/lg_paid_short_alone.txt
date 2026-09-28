@@ -1,0 +1,13 @@
+target http://127.0.0.1:8100 · 120 requests · 100 concurrent · stream=true · open loop @ 2 req/s
+
+── results: paid short-service alone ──────────────────────────────────────
+requests    120 ok · 0 failed (0 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   59.84 s
+throughput  2.01 req/s
+                  p50       p95       p99       max
+TTFT (ms)       207.6     209.3     209.8     226.0
+E2E (ms)        325.6     331.5     335.1     353.5
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| paid short-service alone | 120 | 0 | 2.01 | 207.6 | 209.3 | 209.8 | 325.6 | 331.5 | 335.1 |

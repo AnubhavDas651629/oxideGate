@@ -79,6 +79,10 @@ struct Args {
     /// Per-request timeout in seconds.
     #[arg(long, default_value_t = 120)]
     timeout_secs: u64,
+
+    /// Sent as `Authorization: Bearer <key>`; selects the tenant.
+    #[arg(long)]
+    api_key: Option<String>,
 }
 
 /// How a single request ended. Failures are split by kind because they
@@ -320,12 +324,13 @@ async fn one_request(client: &reqwest::Client, args: &Args, started: Instant) ->
         "messages": [{"role": "user", "content": "hello"}],
     });
 
-    let resp = match client
+    let mut request = client
         .post(format!("{}/v1/chat/completions", args.url))
-        .json(&body)
-        .send()
-        .await
-    {
+        .json(&body);
+    if let Some(key) = &args.api_key {
+        request = request.bearer_auth(key);
+    }
+    let resp = match request.send().await {
         Ok(r) => r,
         Err(_) => return Outcome::Transport,
     };

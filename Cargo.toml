@@ -19,6 +19,14 @@ metrics-exporter-prometheus = "0.18.3"
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"
 
+[dev-dependencies]
+criterion = "0.5"
+
+# Experiment 4: cost of quota-state contention (ROADMAP D2).
+[[bench]]
+name = "admission"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = true

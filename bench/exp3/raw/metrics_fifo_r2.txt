@@ -1,0 +1,7 @@
+oxidegate_requests_total{outcome="ok",tenant="paid"} 120
+oxidegate_requests_total{outcome="ok",tenant="free"} 408
+oxidegate_requests_total{outcome="rejected",reason="concurrency_limited",tenant="free"} 392
+oxidegate_queue_wait_seconds_sum{tier="paid"} 1562.7337292049997
+oxidegate_queue_wait_seconds_count{tier="paid"} 120
+oxidegate_queue_wait_seconds_sum{tier="free"} 4420.794411199
+oxidegate_queue_wait_seconds_count{tier="free"} 408

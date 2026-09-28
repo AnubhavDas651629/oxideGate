@@ -1,6 +1,6 @@
 # I built a batching layer and measured it into the ground
 
-*Draft 1 — Sep 27, 2026. Experiments 1 and 2 of oxideGate. Raw data and the scripts
+*Draft 1 — Sep 28, 2026. Experiments 1–4 of oxideGate. Raw data and the scripts
 that produced them are in [`bench/`](bench/).*
 
 ## The idea I started with
@@ -343,11 +343,142 @@ how much TTFT to trade for how much throughput, not a single point. The
 method (sweep the limit, read both curves) carries over; the clean corner
 doesn't.
 
+## Experiment 3 — does a free-tier flood move paid-tier latency?
+
+With a queue the gateway controls (Experiment 2), it can choose who goes
+next. Multi-tenancy adds tenants with tiers, and a **deficit round robin**
+queue: one FIFO per tenant, served in rotation, with paid weighted 1.0 and
+free 0.5. When both are backlogged, paid gets 2 dispatches for every 1
+free. (Why DRR and not virtual-time WFQ or strict priority: ROADMAP D6.)
+
+**Setup.** The same capacity-4 mock, gateway limit 4, global queue 200.
+Two tenants, with every quota set high except a cap of 60 requests in the
+system per tenant, so the queueing policy is the only thing under test.
+
+- **paid:** open loop, 2 req/s for 60 s, about a third of capacity.
+  On its own it never waits.
+- **free:** open loop, 10 req/s, started 5 s earlier so a backlog already
+  exists. Together that's 12 req/s against 5.9: heavy overload.
+
+Three conditions, 3 interleaved reps each. The only difference between
+FIFO and DRR is `OXIDEGATE_FAIR_QUEUE`:
+
+| condition | paid TTFT p50 (ms) | paid TTFT p99 | paid E2E p99 | free served | free rejected |
+|---|---|---|---|---|---|
+| paid alone (baseline) | 206 | 209 | 699 | – | – |
+| free flood + **FIFO** | 14240 | 14874 | 15341 | 410 | 390 |
+| free flood + **DRR** | 347 | 701 | 1176 | 410 | 390 |
+
+With a single FIFO, the flood simply sits in front of paid: every paid
+request waits behind up to 60 free requests plus its own earlier ones that
+have piled up (~88 in the system ÷ 5.9 req/s ≈ 14.9 s): **14.9 s at p99**.
+With DRR the
+same flood costs paid **+0.49 s at p99**, about 30× less. The free tenant
+gets exactly the same service under both policies (410 served, and every
+one of its 390 rejections came from its own concurrency cap). The
+backend's capacity is fixed, so fairness doesn't change how much is
+served. It changes the order.
+
+### It isn't zero, and here's why
+
+The ROADMAP target says a free flood "must not move paid-tier p99". It
+moves it by half a second. The reason is structural, not a bug. DRR
+decides who gets the **next free backend slot**, but it can't take a slot
+away from a free request that's already running (no preemption). A paid
+request that arrives while all 4 slots are streaming free replies waits
+for the first of them to finish. That can take up to one full service
+time, 677 ms here.
+
+If that explanation is right, the penalty should scale with service time.
+I ran one extra pair with the mock set to 5 tokens (service ≈ 330 ms
+instead of 677 ms; the flood raised to 20 req/s to keep it an overload at
+the higher capacity):
+
+| service time | paid alone TTFT p99 | paid under flood (DRR) TTFT p99 | penalty |
+|---|---|---|---|
+| ~677 ms | 209 ms | 701 ms | +492 ms |
+| ~330 ms | 210 ms | 387 ms | +177 ms |
+
+Halving the service time cut the penalty by 64%, and both stay under one
+service time. (That's one rep for the short-service row; it's
+supporting evidence, not a curve.)
+
+So the honest claim is: **with weighted fair queueing, a flood can delay a
+paid request by at most one backend service time, regardless of how big
+the flood is. With FIFO, the delay grows with the flood.** Getting paid
+p99 back to exactly baseline would need one of:
+
+- **reserved capacity:** keep some slots paid-only, at the cost of idle
+  slots when paid is quiet
+- **a lower in-flight limit:** fewer, shorter backend queues, at the cost
+  of throughput (Experiment 2)
+- **preemption:** which a streaming HTTP backend doesn't support
+
+Each is a policy decision about what free-tier traffic is worth. None of
+them is a bug fix.
+
+## Experiment 4 — what do shared quota counters cost? (D2)
+
+Every request takes a tenant's lock twice: once to admit (check and take
+from the rate and token buckets, bump the concurrency count) and once to
+release (refund unused tokens). D2 argued against Redis for this in V1: a
+network round trip should cost thousands of times more than a contended
+in-process lock. This experiment measures both.
+
+`cargo bench --bench admission` (criterion) runs one admit + release on T
+threads at once. It reports wall time per operation across all threads,
+which is 1 / throughput. If the threads didn't interfere, the number would
+fall as T rises.
+
+| threads | per-tenant lock, all on **one** tenant | per-tenant lock, **own** tenant each | one **global** lock, own tenant each | bare atomic inc/dec |
+|---|---|---|---|---|
+| 1 | 81 ns | 81 ns | 60 ns | 3 ns |
+| 2 | 176 | 78 | 144 | 11 |
+| 4 | 196 | 42 | 146 | 17 |
+| 8 | 272 | 33 | 173 | 76 |
+| 16 | 262 | 19 | 170 | 39 |
+
+**One loopback TCP round trip: 14.2 µs.**
+
+(Apple M5, 10 cores, so 16 threads oversubscribes the CPU. 95% confidence
+intervals are in `bench/exp4/results.txt` and are within ±5% everywhere.)
+
+Reading it:
+
+- **Contention is real but small.** When every thread hammers one tenant,
+  per-op cost triples, then plateaus around 270 ns. The lock serialises,
+  which puts the ceiling at about 3.7 M admissions per second, for a
+  single tenant.
+- **The per-tenant design scales; a global lock wouldn't.** With a tenant
+  per thread, per-tenant locks don't interfere (81 → 19 ns as threads are
+  added). The global-lock version stays at ~170 ns however many tenants
+  there are, because every tenant queues on the same lock.
+- **The network is the thing to avoid.** A single loopback round trip, with
+  no Redis and no real network, is ~50× the *worst-contended* in-process
+  admission. Admit plus release is two round trips. Over a real network
+  (0.2–0.5 ms per trip) the gap becomes 3–4 orders of magnitude, which is
+  what D2 claimed. On loopback it's closer to 2 orders.
+- **None of this matters next to the request itself.** 270 ns against a
+  ~677 ms request is 0.00004%. Quota state won't be this gateway's
+  bottleneck at any realistic request rate. The reason to go to Redis
+  later is running **several gateway instances** that must share one
+  budget, not speed. And that move costs about 100× per admission at
+  best, so it should wait until it's needed.
+
+One thing I didn't expect: single-threaded, the real code (81 ns) is
+*slower* than the global-lock copy (60 ns), even though the copy does the
+same arithmetic. The difference is outside the lock: the real `Lease::drop`
+builds a `String` for the tenant's Prometheus label on every request, and
+looks up the counter by name. That's a small allocation on the hot path,
+so it's the first candidate for the Phase 4 profiling pass.
+
 ## Reproduce
 
 ```sh
 bench/exp1/run.sh            # Experiment 1, ~35 min; mock :9100, gateway :8100
 bench/exp2/run.sh            # Experiment 2, ~40 min
+bench/exp3/run.sh            # Experiment 3, ~13 min
+cargo bench --bench admission  # Experiment 4, ~3 min
 ```
 
 Raw per-run output (loadgen reports plus gateway `/metrics` scrapes) for

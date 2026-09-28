@@ -1,0 +1,13 @@
+target http://127.0.0.1:8100 · 120 requests · 100 concurrent · stream=true · open loop @ 2 req/s
+
+── results: paid alone rep1 ──────────────────────────────────────
+requests    120 ok · 0 failed (0 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   60.17 s
+throughput  1.99 req/s
+                  p50       p95       p99       max
+TTFT (ms)       206.0     208.3     209.2     209.7
+E2E (ms)        675.8     692.7     700.4     700.9
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| paid alone rep1 | 120 | 0 | 1.99 | 206.0 | 208.3 | 209.2 | 675.8 | 692.7 | 700.4 |

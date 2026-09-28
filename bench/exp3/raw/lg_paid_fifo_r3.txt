@@ -1,0 +1,13 @@
+target http://127.0.0.1:8100 · 120 requests · 100 concurrent · stream=true · open loop @ 2 req/s
+
+── results: paid fifo rep3 ──────────────────────────────────────
+requests    120 ok · 0 failed (0 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   74.75 s
+throughput  1.61 req/s
+                  p50       p95       p99       max
+TTFT (ms)     14196.7   14778.4   14860.3   14860.3
+E2E (ms)      14663.7   15245.3   15319.0   15327.2
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| paid fifo rep3 | 120 | 0 | 1.61 | 14196.7 | 14778.4 | 14860.3 | 14663.7 | 15245.3 | 15319.0 |

@@ -1,0 +1,13 @@
+target http://127.0.0.1:8100 · 1600 requests · 400 concurrent · stream=true · open loop @ 20 req/s
+
+── results: free short drr ──────────────────────────────────────
+requests    932 ok · 668 failed (668 rejected 429 · 0 http error · 0 transport · 0 truncated)
+wall time   84.70 s
+throughput  11.00 req/s
+                  p50       p95       p99       max
+TTFT (ms)      5517.3    5660.7    5681.2    5713.9
+E2E (ms)       5636.1    5779.5    5804.0    5832.7
+
+| label | ok | failed | req/s | TTFT p50 | TTFT p95 | TTFT p99 | E2E p50 | E2E p95 | E2E p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| free short drr | 932 | 668 | 11.00 | 5517.3 | 5660.7 | 5681.2 | 5636.1 | 5779.5 | 5804.0 |
