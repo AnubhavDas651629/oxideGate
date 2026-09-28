@@ -1,5 +1,6 @@
 use anyhow::Context;
 use oxidegate::scheduler::{self, SchedulerConfig};
+use oxidegate::tenants::Tenants;
 use oxidegate::{build_router, telemetry, AppState, Backend};
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,22 @@ async fn main() -> anyhow::Result<()> {
     // 0 = no limit: every request goes straight to the backend, which is
     // the pre-limiter behaviour and Experiment 2's control.
     let max_inflight: usize = env_num("OXIDEGATE_MAX_INFLIGHT", 0);
+    // 1 = deficit round robin across tenants (D6); 0 = one FIFO, the
+    // control for Experiment 3.
+    let fair = env_num::<u8>("OXIDEGATE_FAIR_QUEUE", 1) != 0;
+    let default_max_tokens: u32 = env_num("OXIDEGATE_DEFAULT_MAX_TOKENS", 256);
+
+    // No tenants file = single anonymous tenant: no auth, no limits.
+    let tenants = match std::env::var("OXIDEGATE_TENANTS") {
+        Ok(path) => Tenants::load(std::path::Path::new(&path))
+            .with_context(|| format!("loading tenants from {path}"))?,
+        Err(_) => Tenants::anonymous(),
+    };
+    if tenants.is_anonymous() {
+        warn!("OXIDEGATE_TENANTS not set: single anonymous tenant, no auth, no quotas");
+    } else {
+        info!(tenants = tenants.len(), "tenants loaded");
+    }
 
     let metrics = telemetry::install()?;
 
@@ -49,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         queue_depth,
         window: Duration::from_millis(window_ms),
         max_inflight,
+        fair,
     };
     if max_inflight == 0 {
         // Not an error — it is Experiment 2's control — but it should never
@@ -62,7 +80,12 @@ async fn main() -> anyhow::Result<()> {
     }
     let scheduler = scheduler::spawn(backend, cfg);
 
-    let state = Arc::new(AppState { scheduler, metrics });
+    let state = Arc::new(AppState {
+        scheduler,
+        metrics,
+        tenants,
+        default_max_tokens,
+    });
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -74,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
         batch_window_ms = window_ms,
         queue_depth,
         max_inflight,
+        fair,
         "oxideGate listening on {bind_addr}"
     );
 

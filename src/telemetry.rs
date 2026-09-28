@@ -19,6 +19,8 @@ pub const QUEUE_DEPTH: &str = "oxidegate_queue_depth";
 pub const BACKEND_INFLIGHT: &str = "oxidegate_backend_inflight";
 /// Requests dropped from the queue because the client hung up while waiting.
 pub const ABANDONED_TOTAL: &str = "oxidegate_abandoned_total";
+/// Completion tokens charged, per tenant (D6 accounting).
+pub const TOKENS_TOTAL: &str = "oxidegate_tokens_total";
 
 /// Explicit buckets. The defaults are tuned for millisecond web handlers;
 /// inference spans milliseconds to minutes, so the range has to be wider or

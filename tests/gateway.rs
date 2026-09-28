@@ -5,6 +5,7 @@
 use axum::{routing::post, Json, Router};
 use futures_util::StreamExt;
 use oxidegate::scheduler::{self, SchedulerConfig};
+use oxidegate::tenants::{TenantConfig, Tenants, Tier};
 use oxidegate::{build_router, telemetry, AppState, Backend};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -43,13 +44,19 @@ async fn spawn_gateway_with(backend_url: String, window: Duration, queue_depth: 
             queue_depth,
             window,
             max_inflight: 0,
+            fair: true,
         },
     )
     .await
 }
 
-/// Spawn the gateway with a full scheduler config.
+/// Spawn the gateway with a full scheduler config, single anonymous tenant.
 async fn spawn_gateway_cfg(backend_url: String, cfg: SchedulerConfig) -> String {
+    spawn_gateway_full(backend_url, cfg, Tenants::anonymous()).await
+}
+
+/// Spawn the gateway with a scheduler config and a tenant registry.
+async fn spawn_gateway_full(backend_url: String, cfg: SchedulerConfig, tenants: Tenants) -> String {
     let backend = Arc::new(Backend {
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -61,6 +68,8 @@ async fn spawn_gateway_cfg(backend_url: String, cfg: SchedulerConfig) -> String 
     let state = Arc::new(AppState {
         scheduler,
         metrics: metrics_handle(),
+        tenants,
+        default_max_tokens: 256,
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -449,6 +458,7 @@ fn limited(queue_depth: usize, max_inflight: usize) -> SchedulerConfig {
         queue_depth,
         window: Duration::ZERO,
         max_inflight,
+        fair: true,
     }
 }
 
@@ -675,5 +685,220 @@ async fn request_abandoned_in_queue_is_never_sent_to_the_backend() {
         load.calls.load(Ordering::SeqCst),
         1,
         "B's client was gone; the scheduler should have skipped it"
+    );
+}
+
+// ── multi-tenancy (Block C, D6) ──────────────────────────────────────────
+
+fn tenant(id: &str, tier: Tier, tpm: u64, rps: f64, conc: u32) -> TenantConfig {
+    TenantConfig {
+        id: id.into(),
+        api_key: format!("key-{id}"),
+        tier,
+        tokens_per_minute: tpm,
+        requests_per_second: rps,
+        max_concurrent: conc,
+    }
+}
+
+async fn post_as(gw: &str, key: Option<&str>, body: &Value) -> reqwest::Response {
+    let mut req = reqwest::Client::new()
+        .post(format!("{gw}/v1/chat/completions"))
+        .json(body);
+    if let Some(k) = key {
+        req = req.bearer_auth(k);
+    }
+    req.send().await.unwrap()
+}
+
+async fn error_code(resp: reqwest::Response) -> (u16, String) {
+    let status = resp.status().as_u16();
+    let body: Value = resp.json().await.unwrap();
+    (
+        status,
+        body["error"]["code"].as_str().unwrap_or("").to_string(),
+    )
+}
+
+#[tokio::test]
+async fn keyed_mode_requires_a_valid_api_key() {
+    let tenants = Tenants::from_configs(&[tenant("a", Tier::Paid, 1_000_000, 100.0, 10)]).unwrap();
+    let gw = spawn_gateway_full(spawn_instant_backend().await, limited(10, 0), tenants).await;
+
+    let (s, code) = error_code(post_as(&gw, None, &request_body()).await).await;
+    assert_eq!((s, code.as_str()), (401, "invalid_api_key"));
+    let (s, _) = error_code(post_as(&gw, Some("wrong"), &request_body()).await).await;
+    assert_eq!(s, 401);
+    assert_eq!(
+        post_as(&gw, Some("key-a"), &request_body()).await.status(),
+        200
+    );
+
+    // Health and metrics stay unauthenticated.
+    assert_eq!(
+        reqwest::get(format!("{gw}/health")).await.unwrap().status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn tenant_rate_limit_rejects_the_excess_of_a_burst() {
+    // 5 req/s, burst 5: 12 at once -> 5 accepted, 7 rate-limited.
+    let tenants = Tenants::from_configs(&[tenant("a", Tier::Free, 1_000_000, 5.0, 100)]).unwrap();
+    let gw = spawn_gateway_full(spawn_instant_backend().await, limited(100, 0), tenants).await;
+
+    let mut codes = Vec::new();
+    for _ in 0..12 {
+        codes.push(error_or_ok(post_as(&gw, Some("key-a"), &request_body()).await).await);
+    }
+    assert_eq!(codes.iter().filter(|c| *c == "ok").count(), 5, "{codes:?}");
+    assert_eq!(
+        codes.iter().filter(|c| *c == "rate_limited").count(),
+        7,
+        "{codes:?}"
+    );
+}
+
+async fn error_or_ok(resp: reqwest::Response) -> String {
+    if resp.status() == 200 {
+        let _ = resp.bytes().await;
+        "ok".into()
+    } else {
+        error_code(resp).await.1
+    }
+}
+
+#[tokio::test]
+async fn tenant_concurrency_cap_holds_under_a_burst() {
+    let tenants = Tenants::from_configs(&[tenant("a", Tier::Paid, 1_000_000, 1000.0, 2)]).unwrap();
+    let (backend, load) = spawn_slow_backend(Duration::from_millis(200)).await;
+    let gw = spawn_gateway_full(backend, limited(100, 0), tenants).await;
+
+    let reqs = (0..8)
+        .map(|_| async { error_or_ok(post_as(&gw, Some("key-a"), &request_body()).await).await });
+    let codes = futures_util::future::join_all(reqs).await;
+
+    assert_eq!(codes.iter().filter(|c| *c == "ok").count(), 2, "{codes:?}");
+    assert_eq!(
+        codes.iter().filter(|c| *c == "concurrency_limited").count(),
+        6,
+        "{codes:?}"
+    );
+    assert!(load.peak.load(Ordering::SeqCst) <= 2);
+}
+
+#[tokio::test]
+async fn token_budget_reserves_max_tokens_then_refunds_actual_usage() {
+    // Budget 600/min. The stub reports 2 completion tokens per reply.
+    let cfg = tenant("a", Tier::Paid, 600, 1000.0, 100);
+    let tenants = Tenants::from_configs(&[cfg]).unwrap();
+    let gw = spawn_gateway_full(spawn_instant_backend().await, limited(100, 0), tenants).await;
+
+    // A request that could cost more than the whole budget is refused up
+    // front, before the backend does any work.
+    let mut big = request_body();
+    big["max_tokens"] = json!(1000);
+    let (s, code) = error_code(post_as(&gw, Some("key-a"), &big).await).await;
+    assert_eq!((s, code.as_str()), (429, "token_budget_exhausted"));
+
+    // 500 reserved, 2 used: after it completes, nearly the whole 600 is
+    // back — so a second 500-token request fits. With charge-on-reserve and
+    // no refund, it would not.
+    let mut req = request_body();
+    req["max_tokens"] = json!(500);
+    assert_eq!(post_as(&gw, Some("key-a"), &req).await.status(), 200);
+    assert_eq!(post_as(&gw, Some("key-a"), &req).await.status(), 200);
+}
+
+#[tokio::test]
+async fn streamed_tokens_are_counted_against_the_budget() {
+    // 20 token frames per reply; budget 100/min; reservation 50 per request.
+    let frames: String = (0..20)
+        .map(|i| format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"t{i}\"}}}}]}}\n\n"))
+        .chain(std::iter::once("data: [DONE]\n\n".to_string()))
+        .collect();
+    let backend = spawn_backend(Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let frames = frames.clone();
+            async move {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                    frames,
+                )
+            }
+        }),
+    ))
+    .await;
+    let tenants = Tenants::from_configs(&[tenant("a", Tier::Paid, 100, 1000.0, 100)]).unwrap();
+    let gw = spawn_gateway_full(backend, limited(100, 0), tenants).await;
+
+    let mut body = request_body();
+    body["stream"] = json!(true);
+    body["max_tokens"] = json!(50);
+
+    // Each reply really costs 20. Reserve 50 needs 50 available:
+    // 100 -> 80 -> 60 -> 40 (refused). If streamed tokens weren't counted
+    // (charged 0), every request would be refunded to 100 and all would pass.
+    let mut codes = Vec::new();
+    for _ in 0..4 {
+        codes.push(error_or_ok(post_as(&gw, Some("key-a"), &body).await).await);
+    }
+    assert_eq!(codes, ["ok", "ok", "ok", "token_budget_exhausted"]);
+}
+
+/// Experiment 3 in miniature. The backend serves one request at a time.
+/// A free tenant floods the queue with 20 requests; then a paid request
+/// arrives. With fair queueing it is served within a couple of slots.
+/// With FIFO it waits behind the entire flood.
+#[tokio::test]
+async fn paid_request_is_not_starved_by_a_free_flood() {
+    async fn paid_latency(fair: bool) -> Duration {
+        let tenants = Tenants::from_configs(&[
+            tenant("free", Tier::Free, 10_000_000, 1000.0, 100),
+            tenant("paid", Tier::Paid, 10_000_000, 1000.0, 100),
+        ])
+        .unwrap();
+        let (backend, _) = spawn_slow_backend(Duration::from_millis(50)).await;
+        let cfg = SchedulerConfig {
+            fair,
+            ..limited(100, 1)
+        };
+        let gw = spawn_gateway_full(backend, cfg, tenants).await;
+
+        let flood: Vec<_> = (0..20)
+            .map(|_| {
+                let gw = gw.clone();
+                tokio::spawn(async move {
+                    post_as(&gw, Some("key-free"), &request_body())
+                        .await
+                        .status()
+                })
+            })
+            .collect();
+        tokio::time::sleep(Duration::from_millis(30)).await; // flood is queued
+
+        let start = std::time::Instant::now();
+        let status = post_as(&gw, Some("key-paid"), &request_body())
+            .await
+            .status();
+        let took = start.elapsed();
+        assert_eq!(status, 200);
+        for f in flood {
+            assert_eq!(f.await.unwrap(), 200);
+        }
+        took
+    }
+
+    let fair = paid_latency(true).await;
+    let fifo = paid_latency(false).await;
+    // FIFO: behind ~19 x 50ms. Fair: at most ~2-3 slots.
+    assert!(
+        fair < Duration::from_millis(250),
+        "fair queueing should serve paid quickly, took {fair:?}"
+    );
+    assert!(
+        fifo > Duration::from_millis(700),
+        "control: FIFO should make paid wait behind the flood, took {fifo:?}"
     );
 }

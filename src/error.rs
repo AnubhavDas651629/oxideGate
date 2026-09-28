@@ -4,6 +4,8 @@ use axum::Json;
 use serde_json::json;
 use thiserror::Error;
 
+use crate::tenants::AdmitError;
+
 //everything that could go wrong while serving a request
 #[derive(Debug, Error)]
 pub enum GatewayError {
@@ -21,11 +23,19 @@ pub enum GatewayError {
 
     #[error("Scheduler crashed or shut down")]
     SchedulerGone,
+
+    #[error("missing or invalid API key")]
+    Unauthorized,
+
+    /// A tenant limit refused the request (D6). #[from] lets `?` convert
+    /// an AdmitError straight into this variant.
+    #[error(transparent)]
+    Admission(#[from] AdmitError),
 }
 
 impl GatewayError {
     /// the status code we show the client and the short code in the body
-    fn parts(&self) -> (StatusCode, &'static str) {
+    pub fn parts(&self) -> (StatusCode, &'static str) {
         match self {
             // we could not talk to the backend at all -> 502 gateway
             GatewayError::BackendUnreachable(_) => (StatusCode::BAD_GATEWAY, "backend_unreachable"),
@@ -33,6 +43,16 @@ impl GatewayError {
             GatewayError::BackendStatus { .. } => (StatusCode::BAD_GATEWAY, "backend_error"),
             GatewayError::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "queue_full"),
             GatewayError::SchedulerGone => (StatusCode::INTERNAL_SERVER_ERROR, "scheduler_gone"),
+            GatewayError::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_api_key"),
+            GatewayError::Admission(AdmitError::RateLimited) => {
+                (StatusCode::TOO_MANY_REQUESTS, "rate_limited")
+            }
+            GatewayError::Admission(AdmitError::ConcurrencyLimited) => {
+                (StatusCode::TOO_MANY_REQUESTS, "concurrency_limited")
+            }
+            GatewayError::Admission(AdmitError::TokenBudget) => {
+                (StatusCode::TOO_MANY_REQUESTS, "token_budget_exhausted")
+            }
         }
     }
 }

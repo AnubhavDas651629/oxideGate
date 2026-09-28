@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::Instrument;
 
 use crate::error::GatewayError;
+use crate::fairqueue::FairQueue;
 use crate::types::ChatCompletionRequest;
 use crate::{telemetry, Backend};
 
@@ -52,6 +53,15 @@ pub struct QueuedRequest {
     pub req: ChatCompletionRequest,
     pub respond_to: oneshot::Sender<Reply>,
     pub enqueued_at: Instant,
+    /// For per-tier queue-wait metrics (Experiment 3).
+    pub tier: &'static str,
+}
+
+/// Who a request belongs to, for fair queueing.
+pub struct QueueKey {
+    pub tenant: Arc<str>,
+    pub weight: f64,
+    pub tier: &'static str,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -65,32 +75,90 @@ pub struct SchedulerConfig {
     /// Maximum requests in flight at the backend at once. 0 = unlimited,
     /// which is the pre-limiter behaviour and Experiment 2's control.
     pub max_inflight: usize,
+    /// Deficit round robin across tenants (D6). false = one shared FIFO,
+    /// which is Experiment 3's control.
+    pub fair: bool,
+}
+
+/// The queue, shared between request handlers (who push) and the scheduler
+/// task (which pops).
+///
+/// Why not the mpsc channel used before: a channel is one FIFO, and fair
+/// queueing needs to choose *which* waiting request goes next. So the
+/// queue becomes a data structure behind a Mutex, and a Notify stands in
+/// for the channel's "wake the receiver when something arrives".
+struct Shared {
+    queue: Mutex<FairQueue<QueuedRequest>>,
+    notify: Notify,
+    fair: bool,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, FairQueue<QueuedRequest>> {
+        // See Tenant::lock for why poisoning is tolerated.
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn pop(&self) -> Option<QueuedRequest> {
+        let mut q = self.lock();
+        let item = q.pop();
+        metrics::gauge!(telemetry::QUEUE_DEPTH).set(q.len() as f64);
+        item
+    }
+
+    /// Wait for the next request.
+    ///
+    /// No lost wakeups: notify_one() stores a permit if nobody is waiting,
+    /// so a push that lands between our empty pop() and notified() makes
+    /// notified() return at once, and we loop and find it.
+    async fn next(&self) -> QueuedRequest {
+        loop {
+            if let Some(item) = self.pop() {
+                return item;
+            }
+            self.notify.notified().await;
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct SchedulerHandle {
-    tx: mpsc::Sender<QueuedRequest>,
+    shared: Arc<Shared>,
 }
 
+/// In FIFO mode every request shares this key, so DRR degenerates to one
+/// queue served in arrival order.
+const FIFO_KEY: &str = "";
+
 impl SchedulerHandle {
-    pub async fn submit(&self, req: ChatCompletionRequest) -> Reply {
+    pub async fn submit(&self, req: ChatCompletionRequest, key: QueueKey) -> Reply {
         let (tx, rx) = oneshot::channel();
 
         let queued_req = QueuedRequest {
             req,
             respond_to: tx,
             enqueued_at: Instant::now(),
+            tier: key.tier,
         };
 
-        // try_send, never send().await: if the queue is full we answer 429
+        let (qkey, weight) = if self.shared.fair {
+            (key.tenant, key.weight)
+        } else {
+            (Arc::from(FIFO_KEY), 1.0)
+        };
+
+        // Never wait for room: if the queue is full we answer 429
         // immediately instead of making the client wait for a place in the
         // line to wait in. This only fires once something upstream stops
         // draining the queue — which is what the in-flight limiter does.
-        if self.tx.try_send(queued_req).is_err() {
-            return Err(GatewayError::QueueFull);
-        }
-        metrics::gauge!(telemetry::QUEUE_DEPTH)
-            .set((self.tx.max_capacity() - self.tx.capacity()) as f64);
+        {
+            let mut q = self.shared.lock();
+            if q.push(&qkey, weight, queued_req).is_err() {
+                return Err(GatewayError::QueueFull);
+            }
+            metrics::gauge!(telemetry::QUEUE_DEPTH).set(q.len() as f64);
+        } // lock released here, before notifying and before awaiting
+        self.shared.notify.notify_one();
 
         match rx.await {
             Ok(reply) => reply,
@@ -100,9 +168,13 @@ impl SchedulerHandle {
 }
 
 pub fn spawn(backend: Arc<Backend>, cfg: SchedulerConfig) -> SchedulerHandle {
-    let (tx, rx) = mpsc::channel(cfg.queue_depth);
-    tokio::spawn(run(rx, backend, cfg));
-    SchedulerHandle { tx }
+    let shared = Arc::new(Shared {
+        queue: Mutex::new(FairQueue::new(cfg.queue_depth)),
+        notify: Notify::new(),
+        fair: cfg.fair,
+    });
+    tokio::spawn(run(Arc::clone(&shared), backend, cfg));
+    SchedulerHandle { shared }
 }
 
 /// Take a backend slot, waiting if all of them are in use.
@@ -121,7 +193,7 @@ async fn acquire_slot(limiter: &Option<Arc<Semaphore>>) -> Option<BackendSlot> {
     }
 }
 
-async fn run(mut rx: mpsc::Receiver<QueuedRequest>, backend: Arc<Backend>, cfg: SchedulerConfig) {
+async fn run(shared: Arc<Shared>, backend: Arc<Backend>, cfg: SchedulerConfig) {
     let limiter = (cfg.max_inflight > 0).then(|| Arc::new(Semaphore::new(cfg.max_inflight)));
 
     loop {
@@ -136,9 +208,7 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, backend: Arc<Backend>, cfg: 
         let Some(first_slot) = acquire_slot(&limiter).await else {
             break;
         };
-        let Some(first) = rx.recv().await else {
-            break;
-        };
+        let first = shared.next().await;
 
         let mut batch = vec![(first, Some(first_slot))];
 
@@ -147,16 +217,16 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, backend: Arc<Backend>, cfg: 
             // Keep collecting until the deadline passes. checked_duration_since
             // returns None once `now` is past the deadline, which ends the loop.
             while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-                match tokio::time::timeout(left, rx.recv()).await {
+                // Cancel-safe: next() can only be interrupted while parked
+                // in notified(), never between popping an item and returning
+                // it, so a timeout can't lose a request.
+                match tokio::time::timeout(left, shared.next()).await {
                     // Slots for these are taken just before dispatch, below.
-                    Ok(Some(req)) => batch.push((req, None)),
-                    Ok(None) => break,
+                    Ok(req) => batch.push((req, None)),
                     Err(_) => break,
                 }
             }
         }
-
-        metrics::gauge!(telemetry::QUEUE_DEPTH).set(rx.len() as f64);
 
         let batch_size = batch.len();
         let queue_wait = batch[0].0.enqueued_at.elapsed();
@@ -192,7 +262,8 @@ async fn run(mut rx: mpsc::Receiver<QueuedRequest>, backend: Arc<Backend>, cfg: 
 async fn dispatch(backend: Arc<Backend>, item: QueuedRequest, slot: BackendSlot) {
     // Per-request queue wait: enqueue until a backend slot was granted and
     // the request left the queue. This is the gateway-side half of latency.
-    metrics::histogram!(telemetry::QUEUE_WAIT).record(item.enqueued_at.elapsed().as_secs_f64());
+    metrics::histogram!(telemetry::QUEUE_WAIT, "tier" => item.tier)
+        .record(item.enqueued_at.elapsed().as_secs_f64());
 
     // On error, `slot` is dropped at the end of this function (the backend
     // is no longer working on it); on success it rides along to the handler.

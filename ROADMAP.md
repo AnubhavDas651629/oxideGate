@@ -136,6 +136,33 @@ once the in-flight concurrency limiter (2b) creates real backpressure. Don't
 read "admission control is done" as "admission control does anything yet" —
 track it as one feature landing in two parts.
 
+### D6 — Multi-tenancy design (decided Sep 28, before Block C)
+
+Chosen explicitly by the author from laid-out alternatives:
+
+- **Deficit round robin** for fairness, over virtual-time WFQ (tighter
+  bounds, O(log n), harder to defend) and strict priority (starves free
+  tier; not "weighted"). Per-tenant queues; paid weight 1.0, free 0.5, so
+  a backlogged paid tenant gets 2 dispatches for every 1 free. Cost unit
+  is one request — the mock's requests are identical; token-weighted cost
+  is the obvious refinement if request sizes vary.
+- **Token budgets reserve, then refund.** Admission reserves `max_tokens`
+  (or a default) and rejects if it doesn't fit; completion refunds the
+  unused part. Never overshoots, even under concurrency — "check then
+  charge after" lets N concurrent requests all pass and overshoot by up to
+  N x max_tokens.
+- **Budgets are tokens-per-minute**, refilling continuously (a token
+  bucket), like hosted LLM APIs — a throughput limit, not a billing cap.
+
+Defaults taken without asking (standard, reversible): tenants from a JSON
+file at startup, `Authorization: Bearer <key>` resolves the tenant; no file
+= single anonymous tenant, so every earlier benchmark still runs unchanged.
+Request rate = token bucket. Per-tenant cap on requests in the system
+(queued + at backend), so one tenant's flood fills only its own share and
+not the global queue. Counted tokens = completion tokens only (prompt
+tokens would need a tokenizer — out of scope); streamed replies are
+counted by SSE frames, ~1 token each on vLLM/Ollama, approximate.
+
 ---
 
 ## Compressed schedule — full scope, Oct 15
